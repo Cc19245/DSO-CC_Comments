@@ -21,52 +21,49 @@
 * along with DSO. If not, see <http://www.gnu.org/licenses/>.
 */
 
-
 #pragma once
- 
+
 #include "util/NumType.h"
 
 namespace dso
 {
 
-enum PixelSelectorStatus {PIXSEL_VOID=0, PIXSEL_1, PIXSEL_2, PIXSEL_3};
+	enum PixelSelectorStatus
+	{
+		PIXSEL_VOID = 0,
+		PIXSEL_1,
+		PIXSEL_2,
+		PIXSEL_3
+	};
 
+	class FrameHessian;
 
-class FrameHessian;
+	class PixelSelector
+	{
+	public:
+		EIGEN_MAKE_ALIGNED_OPERATOR_NEW;
+		int makeMaps(
+			const FrameHessian *const fh,
+			float *map_out, float density, int recursionsLeft = 1, bool plot = false, float thFactor = 1);
 
-class PixelSelector
-{
-public:
-	EIGEN_MAKE_ALIGNED_OPERATOR_NEW;
-	int makeMaps(
-			const FrameHessian* const fh,
-			float* map_out, float density, int recursionsLeft=1, bool plot=false, float thFactor=1);
+		PixelSelector(int w, int h);
+		~PixelSelector();
+		int currentPotential; //!< 当前选择像素点的潜力, 就是网格大小, 越大选点越少
 
-	PixelSelector(int w, int h);
-	~PixelSelector();
-	int currentPotential; 		//!< 当前选择像素点的潜力, 就是网格大小, 越大选点越少
+		bool allowFast;
+		void makeHists(const FrameHessian *const fh);
 
+	private:
+		Eigen::Vector3i select(const FrameHessian *const fh,
+							   float *map_out, int pot, float thFactor = 1);
 
-	bool allowFast;
-	void makeHists(const FrameHessian* const fh);
-private:
+		unsigned char *randomPattern;
 
-	Eigen::Vector3i select(const FrameHessian* const fh,
-			float* map_out, int pot, float thFactor=1);
-
-
-	unsigned char* randomPattern;
-
-
-	int* gradHist;  			//!< 根号梯度平方和分布直方图, 0是所有像素个数
-	float* ths;					//!< 平滑之前的阈值
-	float* thsSmoothed;			//!< 平滑后的阈值
-	int thsStep;
-	const FrameHessian* gradHistFrame;
-};
-
-
-
+		int *gradHist;		//!< 根号梯度平方和分布直方图, 0是所有像素个数
+		float *ths;			//!< 平滑之前的阈值
+		float *thsSmoothed; //!< 平滑后的阈值
+		int thsStep;
+		const FrameHessian *gradHistFrame;
+	};
 
 }
-

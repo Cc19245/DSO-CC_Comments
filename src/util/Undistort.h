@@ -63,7 +63,7 @@ namespace dso
 		int GDepth;			//< 响应函数值的个数
 		float *vignetteMap;
 		float *vignetteMapInv;
-		int w, h; 	//; 输出图像的宽高
+		int w, h;	//; 输出图像的宽高
 		bool valid; //; 在光度畸变的构造函数最后，成功读取完gamma畸变文件、渐晕图片之后，这个变成true
 	};
 

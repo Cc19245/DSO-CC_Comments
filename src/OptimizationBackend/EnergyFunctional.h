@@ -21,144 +21,129 @@
 * along with DSO. If not, see <http://www.gnu.org/licenses/>.
 */
 
-
 #pragma once
 
- 
 #include "util/NumType.h"
 #include "util/IndexThreadReduce.h"
 #include "vector"
 #include <math.h>
 #include "map"
 
-
 namespace dso
 {
 
-class PointFrameResidual;
-class CalibHessian;
-class FrameHessian;
-class PointHessian;
+	class PointFrameResidual;
+	class CalibHessian;
+	class FrameHessian;
+	class PointHessian;
 
+	class EFResidual;
+	class EFPoint;
+	class EFFrame;
+	class EnergyFunctional;
+	class AccumulatedTopHessian;
+	class AccumulatedTopHessianSSE;
+	class AccumulatedSCHessian;
+	class AccumulatedSCHessianSSE;
 
-class EFResidual;
-class EFPoint;
-class EFFrame;
-class EnergyFunctional;
-class AccumulatedTopHessian;
-class AccumulatedTopHessianSSE;
-class AccumulatedSCHessian;
-class AccumulatedSCHessianSSE;
+	extern bool EFAdjointsValid;
+	extern bool EFIndicesValid;
+	extern bool EFDeltaValid;
 
+	class EnergyFunctional
+	{
+	public:
+		EIGEN_MAKE_ALIGNED_OPERATOR_NEW;
+		friend class EFFrame;
+		friend class EFPoint;
+		friend class EFResidual;
+		friend class AccumulatedTopHessian;
+		friend class AccumulatedTopHessianSSE;
+		friend class AccumulatedSCHessian;
+		friend class AccumulatedSCHessianSSE;
 
-extern bool EFAdjointsValid;
-extern bool EFIndicesValid;
-extern bool EFDeltaValid;
+		EnergyFunctional();
+		~EnergyFunctional();
 
+		EFResidual *insertResidual(PointFrameResidual *r);
+		EFFrame *insertFrame(FrameHessian *fh, CalibHessian *Hcalib);
+		EFPoint *insertPoint(PointHessian *ph);
 
+		void dropResidual(EFResidual *r);
+		void marginalizeFrame(EFFrame *fh);
+		void removePoint(EFPoint *ph);
 
-class EnergyFunctional {
-public:
-	EIGEN_MAKE_ALIGNED_OPERATOR_NEW;
-	friend class EFFrame;
-	friend class EFPoint;
-	friend class EFResidual;
-	friend class AccumulatedTopHessian;
-	friend class AccumulatedTopHessianSSE;
-	friend class AccumulatedSCHessian;
-	friend class AccumulatedSCHessianSSE;
+		void marginalizePointsF();
+		void dropPointsF();
+		void solveSystemF(int iteration, double lambda, CalibHessian *HCalib);
+		double calcMEnergyF();
+		double calcLEnergyF_MT();
 
-	EnergyFunctional();
-	~EnergyFunctional();
+		void makeIDX();
 
+		void setDeltaF(CalibHessian *HCalib);
 
-	EFResidual* insertResidual(PointFrameResidual* r);
-	EFFrame* insertFrame(FrameHessian* fh, CalibHessian* Hcalib);
-	EFPoint* insertPoint(PointHessian* ph);
+		void setAdjointsF(CalibHessian *Hcalib);
 
-	void dropResidual(EFResidual* r);
-	void marginalizeFrame(EFFrame* fh);
-	void removePoint(EFPoint* ph);
+		std::vector<EFFrame *> frames;	  //!< 能量函数中的帧
+		int nPoints, nFrames, nResiduals; //!< EFPoint的数目, EFframe关键帧数, 残差数
 
+		MatXX HM; //!< 优化的Hessian矩阵, 边缘化掉逆深度
+		VecX bM;  //!< 优化的Jr项, 边缘化掉逆深度
 
+		int resInA, resInL, resInM; //!< 分别是在计算A, L, 边缘化H和b中残差的数量
+		MatXX lastHS;
+		VecX lastbS;
+		VecX lastX;
 
-	void marginalizePointsF();
-	void dropPointsF();
-	void solveSystemF(int iteration, double lambda, CalibHessian* HCalib);
-	double calcMEnergyF();
-	double calcLEnergyF_MT();
+		std::vector<VecX> lastNullspaces_forLogging;
+		std::vector<VecX> lastNullspaces_pose;
+		std::vector<VecX> lastNullspaces_scale;
+		std::vector<VecX> lastNullspaces_affA;
+		std::vector<VecX> lastNullspaces_affB;
 
+		IndexThreadReduce<Vec10> *red;
 
-	void makeIDX();
+		std::map<uint64_t, // 历史ID
+				 Eigen::Vector2i,
+				 std::less<uint64_t>,
+				 Eigen::aligned_allocator<std::pair<const uint64_t, Eigen::Vector2i>> // 64位对齐
+				 >
+			connectivityMap; //!< 关键帧之间的连接关系, first: 前32表示host ID, 后32位表示target ID; second:数目 [0] 普通的, [1] 边缘化的
 
-	void setDeltaF(CalibHessian* HCalib);
+	private:
+		VecX getStitchedDeltaF() const;
 
-	void setAdjointsF(CalibHessian* Hcalib);
+		void resubstituteF_MT(VecX x, CalibHessian *HCalib, bool MT);
+		void resubstituteFPt(const VecCf &xc, Mat18f *xAd, int min, int max, Vec10 *stats, int tid);
 
-	std::vector<EFFrame*> frames;  		//!< 能量函数中的帧
-	int nPoints, nFrames, nResiduals;	//!< EFPoint的数目, EFframe关键帧数, 残差数
+		void accumulateAF_MT(MatXX &H, VecX &b, bool MT);
+		void accumulateLF_MT(MatXX &H, VecX &b, bool MT);
+		void accumulateSCF_MT(MatXX &H, VecX &b, bool MT);
 
-	MatXX HM;					//!< 优化的Hessian矩阵, 边缘化掉逆深度
-	VecX bM;					//!< 优化的Jr项, 边缘化掉逆深度
+		void calcLEnergyPt(int min, int max, Vec10 *stats, int tid);
 
-	int resInA, resInL, resInM; 	//!< 分别是在计算A, L, 边缘化H和b中残差的数量
-	MatXX lastHS;
-	VecX lastbS;
-	VecX lastX;
-	
-	std::vector<VecX> lastNullspaces_forLogging;
-	std::vector<VecX> lastNullspaces_pose;
-	std::vector<VecX> lastNullspaces_scale;
-	std::vector<VecX> lastNullspaces_affA;
-	std::vector<VecX> lastNullspaces_affB;
+		void orthogonalize(VecX *b, MatXX *H);
+		Mat18f *adHTdeltaF; //!< host和target之间位姿的增量, 一共帧数×帧数个
 
-	IndexThreadReduce<Vec10>* red;
+		Mat88 *adHost; //!< 伴随矩阵, double
+		Mat88 *adTarget;
 
+		Mat88f *adHostF; //!< 伴随矩阵, float
+		Mat88f *adTargetF;
 
-	std::map<uint64_t, // 历史ID
-	  Eigen::Vector2i,
-	  std::less<uint64_t>, 
-	  Eigen::aligned_allocator<std::pair<const uint64_t, Eigen::Vector2i>> // 64位对齐
-	  > connectivityMap; 			//!< 关键帧之间的连接关系, first: 前32表示host ID, 后32位表示target ID; second:数目 [0] 普通的, [1] 边缘化的
+		VecC cPrior;   //!< setting_initialCalibHessian 信息矩阵
+		VecCf cDeltaF; //!< 相机内参增量
+		VecCf cPriorF; // float型
 
-private:
+		AccumulatedTopHessianSSE *accSSE_top_L; //!<
+		AccumulatedTopHessianSSE *accSSE_top_A; //!<
 
-	VecX getStitchedDeltaF() const;
+		AccumulatedSCHessianSSE *accSSE_bot;
 
-	void resubstituteF_MT(VecX x, CalibHessian* HCalib, bool MT);
-    void resubstituteFPt(const VecCf &xc, Mat18f* xAd, int min, int max, Vec10* stats, int tid);
+		std::vector<EFPoint *> allPoints;
+		std::vector<EFPoint *> allPointsToMarg;
 
-	void accumulateAF_MT(MatXX &H, VecX &b, bool MT);
-	void accumulateLF_MT(MatXX &H, VecX &b, bool MT);
-	void accumulateSCF_MT(MatXX &H, VecX &b, bool MT);
-
-	void calcLEnergyPt(int min, int max, Vec10* stats, int tid);
-
-	void orthogonalize(VecX* b, MatXX* H);
-	Mat18f* adHTdeltaF;				//!< host和target之间位姿的增量, 一共帧数×帧数个
-
-
-	Mat88* adHost; 					//!< 伴随矩阵, double
-	Mat88* adTarget;
-
-	Mat88f* adHostF;				//!< 伴随矩阵, float
-	Mat88f* adTargetF;
-
-
-	VecC cPrior;		//!< setting_initialCalibHessian 信息矩阵 
-	VecCf cDeltaF;									//!< 相机内参增量
-	VecCf cPriorF;	// float型
-
-	AccumulatedTopHessianSSE* accSSE_top_L;			//!<
-	AccumulatedTopHessianSSE* accSSE_top_A;			//!< 
-
-
-	AccumulatedSCHessianSSE* accSSE_bot;
-
-	std::vector<EFPoint*> allPoints;		
-	std::vector<EFPoint*> allPointsToMarg;
-
-	float currentLambda;
-};
+		float currentLambda;
+	};
 }
-

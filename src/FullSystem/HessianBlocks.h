@@ -124,7 +124,7 @@ namespace dso
 
 		// Photometric Calibration Stuff
 		float frameEnergyTH; //!< 阈值 // set dynamically depending on tracking residual
-		float ab_exposure;
+		float ab_exposure;	 //; 曝光时间
 
 		bool flaggedForMarginalization;
 

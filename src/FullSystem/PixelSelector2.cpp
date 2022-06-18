@@ -170,7 +170,6 @@ namespace dso
 		}
 	}
 
-
 	/********************************
 	 * @ function:
 	 * 
@@ -202,7 +201,7 @@ namespace dso
 				//; 生成梯度直方图, 为每个block计算阈值。简单理解就是先给每一个小块计算阈值，然后用3x3的直方图对阈值进行滤波
 				makeHists(fh); // 第一次进来，求梯度直方图的frame不是fh，则生成直方图
 			}
-				
+
 			// select!
 			//[ ***step 2*** ] 在当前帧上选择符合条件的像素
 			Eigen::Vector3i n = this->select(fh, map_out, currentPotential, thFactor);

@@ -21,48 +21,45 @@
 * along with DSO. If not, see <http://www.gnu.org/licenses/>.
 */
 
-
 #pragma once
 #include <cstring>
 #include <iostream>
 
-
 namespace dso
 {
 
-//* 辐照度值B和曝光时间t
-class ImageAndExposure
-{
-public:
-	EIGEN_MAKE_ALIGNED_OPERATOR_NEW;
-	float* image;			// irradiance. between 0 and 256
-	int w,h;				// width and height;
-	double timestamp;       // 图像的时间戳
-	float exposure_time;	// exposure time in ms.
-	//! 论文中曝光时间t * 辐照度B
-	inline ImageAndExposure(int w_, int h_, double timestamp_=0) : w(w_), h(h_), timestamp(timestamp_)
+	//* 辐照度值B和曝光时间t
+	class ImageAndExposure
 	{
-		image = new float[w*h]; //这表示图像,666, 标定后的辐照度
-		exposure_time = 1;
-	}
-	inline ~ImageAndExposure()
-	{
-		delete[] image;
-	}
-	// 曝光时间赋值给other
-	inline void copyMetaTo(ImageAndExposure &other)
-	{
-		other.exposure_time = exposure_time;
-	}
-	// 深度拷贝
-	inline ImageAndExposure* getDeepCopy()
-	{
-		ImageAndExposure* img = new ImageAndExposure(w,h,timestamp);
-		img->exposure_time = exposure_time;
-		memcpy(img->image, image, w*h*sizeof(float));
-		return img;
-	}
-};
-
+	public:
+		EIGEN_MAKE_ALIGNED_OPERATOR_NEW;
+		float *image;		 // irradiance. between 0 and 256
+		int w, h;			 // width and height;
+		double timestamp;	 // 图像的时间戳
+		float exposure_time; // exposure time in ms.
+		//! 论文中曝光时间t * 辐照度B
+		inline ImageAndExposure(int w_, int h_, double timestamp_ = 0) : w(w_), h(h_), timestamp(timestamp_)
+		{
+			image = new float[w * h]; //这表示图像,666, 标定后的辐照度
+			exposure_time = 1;
+		}
+		inline ~ImageAndExposure()
+		{
+			delete[] image;
+		}
+		// 曝光时间赋值给other
+		inline void copyMetaTo(ImageAndExposure &other)
+		{
+			other.exposure_time = exposure_time;
+		}
+		// 深度拷贝
+		inline ImageAndExposure *getDeepCopy()
+		{
+			ImageAndExposure *img = new ImageAndExposure(w, h, timestamp);
+			img->exposure_time = exposure_time;
+			memcpy(img->image, image, w * h * sizeof(float));
+			return img;
+		}
+	};
 
 }

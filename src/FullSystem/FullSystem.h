@@ -157,9 +157,9 @@ namespace dso
 
 		std::vector<IOWrap::Output3DWrapper *> outputWrapper;
 
-		bool isLost;
-		bool initFailed;
-		bool initialized;		 //!< 是否完成初始化
+		bool isLost;      //; 是否已经跟踪丢失了，如果跟丢了系统整个结束
+		bool initFailed;  //; 是否跟踪失败了，如果跟踪失败还可以抢救一下
+		bool initialized;    //< 是否完成初始化
 		bool linearizeOperation; //; 是否顺序执行，对应是否强制倍速执行，如果是true，那么不强制实时执行
 
 		void setGammaFunction(float *BInv);
@@ -273,9 +273,9 @@ namespace dso
 		boost::mutex shellPoseMutex;
 
 		/*
- * tracking always uses the newest KF as reference.
- *
- */
+		* tracking always uses the newest KF as reference.
+		*
+		*/
 
 		void makeKeyFrame(FrameHessian *fh);
 		void makeNonKeyFrame(FrameHessian *fh);

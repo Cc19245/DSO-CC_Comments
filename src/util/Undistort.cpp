@@ -54,12 +54,12 @@ namespace dso
 		vignetteMapInv = 0;
 		w = w_;
 		h = h_;
-		output = new ImageAndExposure(w, h);  //; 辐照和时间，注意这里是辐照，不是简单的像素灰度了
+		output = new ImageAndExposure(w, h); //; 辐照和时间，注意这里是辐照，不是简单的像素灰度了
 		if (file == "" || vignetteImage == "")
 		{
 			printf("NO PHOTOMETRIC Calibration!\n");
 		}
-		
+
 		// Step 1 光度仿射变换函数G，注意这个是从辐照B到光度I的变换，而我们最终是要去仿射变换，所以要求逆
 		//! 问题：这里G到底是正变换还是逆变换？ 猜测应该是逆变换，也就是从像素到辐照的变换
 		// read G.
@@ -80,7 +80,7 @@ namespace dso
 			//; 这个写法牛皮啊，直接把所有数据读到vector中了
 			std::vector<float> Gvec = std::vector<float>(std::istream_iterator<float>(l1i), std::istream_iterator<float>());
 
-			GDepth = Gvec.size();  //; 正常应该是256个数，并且最小0，最大255（注意是255不是256）
+			GDepth = Gvec.size(); //; 正常应该是256个数，并且最小0，最大255（注意是255不是256）
 
 			if (GDepth < 256)
 			{
@@ -186,7 +186,7 @@ namespace dso
 			vignetteMapInv[i] = 1.0f / vignetteMap[i];
 
 		printf("Successfully read photometric calibration!\n");
-		valid = true;   
+		valid = true;
 	}
 
 	PhotometricUndistorter::~PhotometricUndistorter()
@@ -237,7 +237,7 @@ namespace dso
 	void PhotometricUndistorter::processFrame(T *image_in, float exposure_time, float factor)
 	{
 		int wh = w * h;
-		float *data = output->image;  //; 这里直接输出到图像中
+		float *data = output->image; //; 这里直接输出到图像中
 		assert(output->w == w && output->h == h);
 		assert(data != 0);
 
@@ -278,8 +278,6 @@ namespace dso
 	template void PhotometricUndistorter::processFrame<unsigned char>(unsigned char *image_in, float exposure_time, float factor);
 	template void PhotometricUndistorter::processFrame<unsigned short>(unsigned short *image_in, float exposure_time, float factor);
 
-
-
 	//! 光度畸变类 结束， 畸变基类开始
 	//! --------------------------  分割线  -----------------------------------------
 	//! --------------------------  分割线  -----------------------------------------
@@ -317,8 +315,7 @@ namespace dso
 		std::string l1;
 		std::getline(f, l1);
 		f.close();
-		float ic[10];	
-
+		float ic[10];
 
 		// Step 1 相机几何畸变模型
 		Undistort *u; // 矫正基类, 作为返回值, 其他的类型继承自它
@@ -435,7 +432,7 @@ namespace dso
 		// Step 2 相机光度标定参数：包括非线性仿射变换和图像渐晕
 		// 读入相机的光度标定参数
 		u->loadPhotometricCalibration(gammaFilename, "", vignetteFilename);
-		
+
 		return u;
 	}
 
@@ -475,7 +472,7 @@ namespace dso
 		if (!passthrough)
 		{
 			//; 这里是指针赋值，所以操作out_data就相当于操作result->image
-			float *out_data = result->image;				   // 复制的图像做输出
+			float *out_data = result->image; // 复制的图像做输出
 			//; 注意这个in_data实际是上面的去光度畸变之后的图像
 			float *in_data = photometricUndist->output->image; // 输入图像
 
@@ -505,7 +502,7 @@ namespace dso
 				//; 输出图像去畸变，得到对应输入图像中的 像素位置
 				float xx = remapX[idx];
 				float yy = remapY[idx];
-				
+
 				//; 默认配置=0，所以不执行
 				if (benchmark_varNoise > 0)
 				{
@@ -537,19 +534,18 @@ namespace dso
 					// get integer and rational parts
 					int xxi = xx;
 					int yyi = yy;
-					xx -= xxi;  
+					xx -= xxi;
 					yy -= yyi;
 					float xxyy = xx * yy;
 
 					// get array base pointer
 					//; 得到原图这个位置的整数位置（因为像素只能是整数）对应的在数组中的指针
-					const float *src = in_data + xxi + yyi * wOrg;  
+					const float *src = in_data + xxi + yyi * wOrg;
 
 					// interpolate (bilinear)
 					//; 双线性插值得到去畸变后的图像的辐照值（注意这里已经是辐照了，因为上面已经去掉光度了）
 					//; 注意这里操作out_data就是在操作result->image
-					out_data[idx] = xxyy * src[1 + wOrg] + (yy - xxyy) * src[wOrg] 
-								+ (xx - xxyy) * src[1] + (1 - xx - yy + xxyy) * src[0];
+					out_data[idx] = xxyy * src[1 + wOrg] + (yy - xxyy) * src[wOrg] + (xx - xxyy) * src[1] + (1 - xx - yy + xxyy) * src[0];
 				}
 			}
 			// 默认不执行
@@ -700,10 +696,10 @@ namespace dso
 		// -5 ~ 5分成10万份，分辨率0.0001
 		for (int x = 0; x < 100000; x++)
 		{
-			tgX[x] = (x - 50000.0f) / 10000.0f;  // -5 ~ 5 ?
+			tgX[x] = (x - 50000.0f) / 10000.0f; // -5 ~ 5 ?
 			tgY[x] = 0;
-		}	
-		//; 注意：对于自己下载的dso的几个数据集(sequence 1 19 42)应该都是FOV模型，所以这里对应就是FOV子类的函数											
+		}
+		//; 注意：对于自己下载的dso的几个数据集(sequence 1 19 42)应该都是FOV模型，所以这里对应就是FOV子类的函数
 		distortCoordinates(tgX, tgY, tgX, tgY, 100000); // 矫正
 		for (int x = 0; x < 100000; x++)
 		{
@@ -720,7 +716,7 @@ namespace dso
 		for (int y = 0; y < 100000; y++)
 		{
 			tgY[y] = (y - 50000.0f) / 10000.0f;
-			tgX[y] = 0;  //; 注意这里又把x全部归0了
+			tgX[y] = 0; //; 注意这里又把x全部归0了
 		}
 		distortCoordinates(tgX, tgY, tgX, tgY, 100000);
 		for (int y = 0; y < 100000; y++)
@@ -746,7 +742,7 @@ namespace dso
 		printf("initial range: x: %.4f - %.4f; y: %.4f - %.4f!\n", minX, maxX, minY, maxY);
 
 		// Step 2 再精细地裁切，把边界上有一些无效像素的全部裁切掉
-		// 2. while there are invalid pixels at the border: shrink square at the side that 
+		// 2. while there are invalid pixels at the border: shrink square at the side that
 		// has invalid pixels, if several to choose from, shrink the wider dimension.
 		// 然而边界有无效像素：在有 无效像素的一侧缩小正方形，如果有多个可供选择，则缩小较宽的尺寸。
 		bool oobLeft = true, oobRight = true, oobTop = true, oobBottom = true;
@@ -760,10 +756,10 @@ namespace dso
 			//! 这样保证每个Y坐标都分别对应最大x, 最小x, 以便求出边界
 			for (int y = 0; y < h; y++)
 			{
-				remapX[y * 2]     = minX;
+				remapX[y * 2] = minX;
 				remapX[y * 2 + 1] = maxX;
 				//; 这里根据输出图像的高度来划分，很巧妙，其实就是在算图像左右边界的位置，经过畸变后有没有超出输入图像范围的
-				remapY[y * 2]     = minY + (maxY - minY) * (float)y / ((float)h - 1.0f);
+				remapY[y * 2] = minY + (maxY - minY) * (float)y / ((float)h - 1.0f);
 				remapY[y * 2 + 1] = minY + (maxY - minY) * (float)y / ((float)h - 1.0f);
 			}
 			distortCoordinates(remapX, remapY, remapX, remapY, 2 * h); // 加畸变变换到当前图像
@@ -782,9 +778,9 @@ namespace dso
 			//! 保证每个 X 坐标都和Y坐标的最大最小, 构成对应坐标
 			for (int x = 0; x < w; x++)
 			{
-				remapY[x * 2]     = minY;
+				remapY[x * 2] = minY;
 				remapY[x * 2 + 1] = maxY;
-				remapX[x * 2]     = minX + (maxX - minX) * (float)x / ((float)w - 1.0f);
+				remapX[x * 2] = minX + (maxX - minX) * (float)x / ((float)w - 1.0f);
 				remapX[x * 2 + 1] = minX + (maxX - minX) * (float)x / ((float)w - 1.0f);
 			}
 			distortCoordinates(remapX, remapY, remapX, remapY, 2 * w);
@@ -832,10 +828,10 @@ namespace dso
 		//! 思考这里新计算的内参有什么用？
 		//! 解答：如果你有一个归一化平面上的点，我可以用这个内参计算像素坐标（注意归一化平面上的点是没有畸变的）
 		//!      但是如果你有一个原图中的像素点，没办法转成这个新内参的像素坐标，因为畸变是非线性的
-		K(0,0) = ((float)w-1.0f)/(maxX-minX);   
-		K(1,1) = ((float)h-1.0f)/(maxY-minY);
-		K(0,2) = -minX*K(0,0);
-		K(1,2) = -minY*K(1,1);
+		K(0, 0) = ((float)w - 1.0f) / (maxX - minX);
+		K(1, 1) = ((float)h - 1.0f) / (maxY - minY);
+		K(0, 2) = -minX * K(0, 0);
+		K(1, 2) = -minY * K(1, 1);
 	}
 
 	void Undistort::makeOptimalK_full()
@@ -869,8 +865,8 @@ namespace dso
 		std::ifstream infile(configFileName);
 		assert(infile.good());
 
-		std::string l1, l2, l3, l4;  //; 读取4行
-		std::getline(infile, l1);  
+		std::string l1, l2, l3, l4; //; 读取4行
+		std::getline(infile, l1);
 		std::getline(infile, l2);
 		std::getline(infile, l3);
 		std::getline(infile, l4);
@@ -889,7 +885,7 @@ namespace dso
 			if (std::sscanf(l1.c_str(), buf, &parsOrg[0], &parsOrg[1], &parsOrg[2], &parsOrg[3], &parsOrg[4]) == 5 &&
 				std::sscanf(l2.c_str(), "%d %d", &wOrg, &hOrg) == 2) // 得到像素大小
 			{
-				printf("Input resolution: %d %d\n", wOrg, hOrg);  //; 原始图像分辨率
+				printf("Input resolution: %d %d\n", wOrg, hOrg); //; 原始图像分辨率
 				printf("In: %f %f %f %f %f\n",
 					   parsOrg[0], parsOrg[1], parsOrg[2], parsOrg[3], parsOrg[4]);
 			}
@@ -943,9 +939,9 @@ namespace dso
 			// contains the integral over intensity over [0,0]-[1,1], whereas I assume the pixel (0,0)
 			// to contain a sample of the intensity ot [0,0], which is best approximated by the integral over
 			// [-0.5,-0.5]-[0.5,0.5]. Thus, the shift by -0.5.
-			//; 0.5 是因为我假设给出了校准，使得 (0,0) 处的像素包含 [0,0]-[1,1] 上的积分强度，而我假设像素 (0,0) 
+			//; 0.5 是因为我假设给出了校准，使得 (0,0) 处的像素包含 [0,0]-[1,1] 上的积分强度，而我假设像素 (0,0)
 			//;   包含 [0,0] 处的强度样本，最好通过 [-0.5,-0.5]-[0.5,0.5] 上的积分来近似。 因此，偏移 -0.5。
-			//! 这个地方具体的解释在github的readme中有解释: 
+			//! 这个地方具体的解释在github的readme中有解释:
 			/* 那个奇怪的“0.5”偏移：在内部，DSO 使用图像中整数位置(1,1) 的像素，即第二行和第二列中的像素，
 			 包含从 (0.5 ,0.5) 到 (1.5,1.5)，即近似于 (1.0, 1.0) 处的连续图像函数的“点样本”。 反过来，
 			 校准工具箱之间似乎没有统一的约定，整数位置 (1,1) 处的像素是否包含 (0.5,0.5) 到 (1.5,1.5) 
@@ -1031,9 +1027,9 @@ namespace dso
 
 		// Step 3 根据配置文件中对图像裁剪的设置，对图像进行不同的矫正
 		if (outputCalibration[0] == -1)
-		    //; 对归一化平面上的位置进行裁切，找到畸变之后仍然全部在输入图像范围内的归一化平面范围（定义为 有效归一化平面范围）。
+			//; 对归一化平面上的位置进行裁切，找到畸变之后仍然全部在输入图像范围内的归一化平面范围（定义为 有效归一化平面范围）。
 			//;  同时会计算出这个归一化平面范围到设置的 输出图像 像素坐标之间的对应关系，也就是新的内参K
-			makeOptimalK_crop(); 
+			makeOptimalK_crop();
 		else if (outputCalibration[0] == -2)
 			makeOptimalK_full();
 		else if (outputCalibration[0] == -3)
@@ -1051,7 +1047,7 @@ namespace dso
 			//; 这个passthrough其实是一个是否直接 经过 的标志，实际上就是如果裁切方式是none
 			//; 那么输入图像和输出图像大小必须设置一样，就不进行去畸变操作，输入图像像素值直接就是
 			//; 输出图像像素值
-			passthrough = true; 
+			passthrough = true;
 		}
 		else
 		{
@@ -1157,7 +1153,7 @@ namespace dso
 	// FOV加畸变：dso的数据集中最常用到的！
 	void UndistortFOV::distortCoordinates(float *in_x, float *in_y, float *out_x, float *out_y, int n) const
 	{
-		float dist = parsOrg[4];  //; 配置文件中的最后一个畸变系数，就是w
+		float dist = parsOrg[4]; //; 配置文件中的最后一个畸变系数，就是w
 		float d2t = 2.0f * tan(dist / 2.0f);
 
 		// current camera parameters
@@ -1167,16 +1163,16 @@ namespace dso
 		float cy = parsOrg[3];
 
 		//; 这个时候K应该还是单位阵啊？
-		float ofx = K(0, 0);  // 1
-		float ofy = K(1, 1);  // 1
-		float ocx = K(0, 2);  // 0
-		float ocy = K(1, 2);  // 0
-		
+		float ofx = K(0, 0); // 1
+		float ofy = K(1, 1); // 1
+		float ocx = K(0, 2); // 0
+		float ocy = K(1, 2); // 0
+
 		//; 遍历100000个点
 		for (int i = 0; i < n; i++)
 		{
-			float x = in_x[i];  //; x从-5变到5
-			float y = in_y[i];  //; y始终是0
+			float x = in_x[i]; //; x从-5变到5
+			float y = in_y[i]; //; y始终是0
 			//; 这里想要做的应该就是把(x, y)这个点投到归一化平面上
 			float ix = (x - ocx) / ofx;
 			float iy = (y - ocy) / ofy;
@@ -1233,7 +1229,7 @@ namespace dso
 
 			// RADTAN
 			//; 一张正常的图片，通过反投影到归一化平面上，得到归一化平面上的坐标
-			float ix = (x - ocx) / ofx;  
+			float ix = (x - ocx) / ofx;
 			float iy = (y - ocy) / ofy;
 			//; 下面对归一化平面上的点，利用radtan模型计算畸变
 			float mx2_u = ix * ix;

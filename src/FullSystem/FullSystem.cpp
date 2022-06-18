@@ -806,37 +806,37 @@ namespace dso
 	/********************************
 	 * @ function:  整个DSO系统的入口函数
 	 * 
-	 * @ param: 	image		标定后的辐照度和曝光时间
-	 * @			id			
+	 * @ param: 	image   标定后的辐照度和曝光时间
+	 * @			id		图像对应数据集文件夹中的第几张图片	  
 	 * 
 	 * @ note: start from here
 	 *******************************/
 	void FullSystem::addActiveFrame(ImageAndExposure *image, int id)
 	{
-		//[ ***step 1*** ] track线程锁
+		// Step 1 track线程锁
 		if (isLost)
 			return;
 		boost::unique_lock<boost::mutex> lock(trackMutex);
 
-		//[ ***step 2*** ] 创建FrameHessian和FrameShell, 并进行相应初始化, 并存储所有帧
+		// Step 2 创建FrameHessian和FrameShell, 并进行相应初始化, 并存储所有帧
 		// =========================== add into allFrameHistory =========================
 		FrameHessian *fh = new FrameHessian(); //; 包含了大部分的内容，比如H、状态
-		FrameShell *shell = new FrameShell();  //; Frame的简化，位姿等的呢过
+		FrameShell *shell = new FrameShell();  //; Frame的简化，位姿等变量
 		shell->camToWorld = SE3();			   // no lock required, as fh is not used anywhere yet.
-		shell->aff_g2l = AffLight(0, 0);
+		shell->aff_g2l = AffLight(0, 0);	   //; 光度变化系数a, b
 		shell->marginalizedAt = shell->id = allFrameHistory.size();
 		shell->timestamp = image->timestamp;
-		shell->incoming_id = id;
-		fh->shell = shell;
-		//; allFrameHistory是历史上的所有帧的轨迹
+		shell->incoming_id = id; //; 这个id是图像在数据集文件夹中的序号
+		fh->shell = shell;		 //; FrameHessian持有FrameShell
+		//; allFrameHistory是历史上的所有帧的轨迹，也就是这次数据集跑完之后的结果
 		allFrameHistory.push_back(shell); // 只把简略的shell存起来
 
-		//[ ***step 3*** ] 得到曝光时间, 生成金字塔, 计算整个图像梯度
+		// Step 3 得到曝光时间, 生成金字塔, 计算整个图像梯度
 		// =========================== make Images / derivatives etc. =========================
 		fh->ab_exposure = image->exposure_time;
 		fh->makeImages(image->image, &Hcalib);
 
-		//[ ***step 4*** ] 进行初始化
+		// Step 4 进行初始化
 		if (!initialized)
 		{
 			// use initializer!

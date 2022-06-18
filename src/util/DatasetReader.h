@@ -100,7 +100,7 @@ class ImageFolderReader
 public:
 	ImageFolderReader(std::string path, std::string calibFile, std::string gammaFile, std::string vignetteFile)
 	{
-		this->path = path;    
+		this->path = path;
 		this->calibfile = calibFile;
 
 #if HAS_ZIPLIB
@@ -124,7 +124,7 @@ public:
 			}
 
 			files.clear();
-			int numEntries = zip_get_num_entries(ziparchive, 0);  
+			int numEntries = zip_get_num_entries(ziparchive, 0);
 			// 遍历zip中的每一个文件
 			for (int k = 0; k < numEntries; k++)
 			{
@@ -132,7 +132,7 @@ public:
 				std::string nstr = std::string(name);
 				if (nstr == "." || nstr == "..")
 					continue;
-				files.push_back(name);  //; 保存zip中每张图片的名称
+				files.push_back(name); //; 保存zip中每张图片的名称
 			}
 			printf("got %d entries and %d files!\n", numEntries, (int)files.size());
 			std::sort(files.begin(), files.end());
@@ -150,7 +150,7 @@ public:
 		//;  1.建立相机畸变模型，其中包括计算正常图像和畸变图像的像素之间的对应关系
 		//;  2.建立相机光度模型，包括辐照B和光度I的非线性仿射函数G、镜头渐晕V
 		undistort = Undistort::getUndistorterForFile(calibFile, gammaFile, vignetteFile);
-		
+
 		//; 内参文件第2行：原始图像大小
 		widthOrg = undistort->getOriginalSize()[0];
 		heightOrg = undistort->getOriginalSize()[1];
@@ -159,7 +159,7 @@ public:
 		height = undistort->getSize()[1];
 
 		// load timestamps if possible.
-		loadTimestamps();  //; 加载时间戳：需要有times.txt文件
+		loadTimestamps(); //; 加载时间戳：需要有times.txt文件
 		printf("ImageFolderReader: got %d files in %s!\n", (int)files.size(), path.c_str());
 	}
 	~ImageFolderReader()
@@ -288,10 +288,10 @@ private:
 		MinimalImageB *minimg = getImageRaw_internal(id, 0);
 
 		// Step 2 得到去畸变(包括光度畸变和几何畸变)后的辐照图像 ImageAndExposure：
-		//; 1.对整个 输入图片 去除光度畸变，包括非线性响应、渐晕的光度畸变 
+		//; 1.对整个 输入图片 去除光度畸变，包括非线性响应、渐晕的光度畸变
 		//; 2.对 输出图片 ，根据畸变的remapX和Y找到对应的原图中的位置，得到输出图片的辐照，就是在去几何畸变
 		ImageAndExposure *ret2 = undistort->undistort<unsigned char>(
-			minimg,   //; 读取的数据集中的原始图像
+			minimg, //; 读取的数据集中的原始图像
 			(exposures.size() == 0 ? 1.0f : exposures[id]),
 			(timestamps.size() == 0 ? 0.0 : timestamps[id]));
 		delete minimg;
@@ -372,17 +372,17 @@ private:
 
 	//------ 私有成员变量
 	std::vector<ImageAndExposure *> preloadedImages;
-	std::vector<std::string> files;   //; zip包中每张图片的名称
-	std::vector<double> timestamps;   //; 数据集中的图像时间戳
-	std::vector<float> exposures;     //; 数据集中的图像曝光时间
+	std::vector<std::string> files; //; zip包中每张图片的名称
+	std::vector<double> timestamps; //; 数据集中的图像时间戳
+	std::vector<float> exposures;	//; 数据集中的图像曝光时间
 
 	int width, height;
 	int widthOrg, heightOrg;
 
-	std::string path;       //; 图片源文件的文件夹路径
-	std::string calibfile;  //; 相机内参文件
+	std::string path;	   //; 图片源文件的文件夹路径
+	std::string calibfile; //; 相机内参文件
 
-	bool isZipped;   
+	bool isZipped;
 
 #if HAS_ZIPLIB
 	zip_t *ziparchive;

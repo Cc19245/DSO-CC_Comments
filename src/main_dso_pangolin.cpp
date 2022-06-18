@@ -45,10 +45,10 @@
 #include "IOWrapper/Pangolin/PangolinDSOViewer.h"
 #include "IOWrapper/OutputWrapper/SampleOutputWrapper.h"
 
-std::string vignette = "";   // 镜头渐晕png图片
+std::string vignette = "";	 // 镜头渐晕png图片
 std::string gammaCalib = ""; // gamma响应函数校准
-std::string source = "";     // 图像源文件，zip压缩包
-std::string calib = "";      // 相机内参文件
+std::string source = "";	 // 图像源文件，zip压缩包
+std::string calib = "";		 // 相机内参文件
 double rescale = 1;
 bool reverse = false;
 bool disableROS = false;
@@ -59,7 +59,7 @@ float playbackSpeed = 0; // 0 for linearize (play as fast as possible, while seq
 bool preload = false;
 bool useSampleOutput = false;
 
-int mode = 0;  // 是否有光度校准，0：有光度校准文件， 1：没有光度校准文件，自己估计a和b， 2：图片已经进行过光度校准
+int mode = 0; // 是否有光度校准，0：有光度校准文件， 1：没有光度校准文件，自己估计a和b， 2：图片已经进行过光度校准
 
 bool firstRosSpin = false;
 
@@ -84,7 +84,6 @@ void exitThread()
 	while (true)
 		pause();
 }
-
 
 /**
  * @brief 根据preset设置一些运行参数，主要是提取的点个数、是否实时运行
@@ -271,7 +270,7 @@ void parseArgument(char *arg)
 		return;
 	}
 
-	//; 读取图像文件, source 
+	//; 读取图像文件, source
 	if (1 == sscanf(arg, "files=%s", buf))
 	{
 		source = buf;
@@ -346,9 +345,9 @@ void parseArgument(char *arg)
 		if (option == 1)
 		{
 			printf("PHOTOMETRIC MODE WITHOUT CALIBRATION!\n");
-			setting_photometricCalibration = 0;  //; 配置不进行光度矫正
-			setting_affineOptModeA = 0; //-1: fix. >=0: optimize (with prior, if > 0).
-			setting_affineOptModeB = 0; //-1: fix. >=0: optimize (with prior, if > 0).
+			setting_photometricCalibration = 0; //; 配置不进行光度矫正
+			setting_affineOptModeA = 0;			//-1: fix. >=0: optimize (with prior, if > 0).
+			setting_affineOptModeB = 0;			//-1: fix. >=0: optimize (with prior, if > 0).
 		}
 		//; 图像就已经去掉了gamma响应、渐晕等，所以直接不包括光度校准部分。比如合成的数据集（仿真数据集）
 		if (option == 2)
@@ -363,7 +362,6 @@ void parseArgument(char *arg)
 	}
 	printf("could not parse argument \"%s\"!!!!\n", arg);
 }
-
 
 int main(int argc, char **argv)
 {
@@ -393,7 +391,7 @@ int main(int argc, char **argv)
 	//; 靠，还能倒放？骚操作
 	int lstart = start;
 	int lend = end;
-	int linc = 1;  //; 正放还是倒放，增加的方向不一样
+	int linc = 1; //; 正放还是倒放，增加的方向不一样
 	if (reverse)
 	{
 		printf("REVERSE!!!!");
@@ -406,8 +404,9 @@ int main(int argc, char **argv)
 
 	// Step 3 new一个系统类
 	FullSystem *fullSystem = new FullSystem();
-	fullSystem->setGammaFunction(reader->getPhotometricGamma());  //; 设置非线性响应函数
-	fullSystem->linearizeOperation = (playbackSpeed == 0);  //; 如果=0，不强制实时执行
+	//; 设置非线性响应函数，注意其中会给类成员变量 Hcalib 赋值
+	fullSystem->setGammaFunction(reader->getPhotometricGamma()); //; 设置非线性响应函数
+	fullSystem->linearizeOperation = (playbackSpeed == 0);		 //; 如果=0，不强制实时执行
 
 	IOWrap::PangolinDSOViewer *viewer = 0;
 	if (!disableAllDisplay)
@@ -421,7 +420,8 @@ int main(int argc, char **argv)
 
 	// Step 4 运行线程
 	// to make MacOS happy: run this in dedicated thread -- and use this one to run the GUI.
-	std::thread runthread([&]()
+	std::thread runthread(
+		[&]()
 		{
 			// Step 4.1. 读取图像的时间戳，以及根据要播放的速度设置什么时候处理这些图像
 			std::vector<int> idsToPlay;
@@ -452,7 +452,7 @@ int main(int argc, char **argv)
 				{
 					int i = idsToPlay[ii];
 					//; 读取图像：去光度畸变和几何畸变，得到输出图像size的辐照图ImageAndExposure
-					preloadedImages.push_back(reader->getImage(i));  
+					preloadedImages.push_back(reader->getImage(i));
 				}
 			}
 
@@ -467,26 +467,28 @@ int main(int argc, char **argv)
 				if (!fullSystem->initialized) // if not initialized: reset start time.
 				{
 					gettimeofday(&tv_start, NULL);
-					started = clock();
-					sInitializerOffset = timesToPlayAt[ii];
+					started = clock();					  //; 这个应该是程序运行到这里时的系统时间
+					sInitializerOffset = timesToPlayAt[ii]; //; 计算的播放的每一帧相对以第一帧的播放时间偏置
 				}
 
-				int i = idsToPlay[ii];
+				int i = idsToPlay[ii]; //; i就是要处理的图像在数据集文件夹中的索引
 
 				//; 如果上面已经提前把所有图像都读取进来了，那么直接从存储的变量中拿出来一张图像即可
 				ImageAndExposure *img;
 				if (preload)
 					img = preloadedImages[ii];
 				else
-					img = reader->getImage(i);  //; 注意getImage函数里面会进行光度校准
+					img = reader->getImage(i); //; 注意getImage函数里面会进行光度校准
 
 				//; 判断是否要跳过这一帧，应该是抽帧之类的操作？
 				bool skipFrame = false;
+				// 播放速度不为0，也就是要强制倍速执行
 				if (playbackSpeed != 0)
 				{
 					struct timeval tv_now;
 					gettimeofday(&tv_now, NULL);
-					double sSinceStart = sInitializerOffset + ((tv_now.tv_sec - tv_start.tv_sec) + (tv_now.tv_usec - tv_start.tv_usec) / (1000.0f * 1000.0f));
+					double sSinceStart = sInitializerOffset +
+										((tv_now.tv_sec - tv_start.tv_sec) + (tv_now.tv_usec - tv_start.tv_usec) / (1000.0f * 1000.0f));
 
 					if (sSinceStart < timesToPlayAt[ii])
 						usleep((int)((timesToPlayAt[ii] - sSinceStart) * 1000 * 1000));
@@ -499,7 +501,7 @@ int main(int argc, char **argv)
 
 				//! 重要：DSO系统的入口函数！
 				if (!skipFrame)
-					fullSystem->addActiveFrame(img, i);
+					fullSystem->addActiveFrame(img, i); //; i就是要处理的图像在数据集文件夹中的索引
 
 				delete img;
 
@@ -530,8 +532,7 @@ int main(int argc, char **argv)
 					printf("LOST!!\n");
 					break;
 				}
-			}  // 结束，整个数据集的所有图像都跟踪完毕，输出最终结果
-
+			} // 结束，整个数据集的所有图像都跟踪完毕，输出最终结果
 
 			fullSystem->blockUntilMappingIsFinished();
 			clock_t ended = clock();
