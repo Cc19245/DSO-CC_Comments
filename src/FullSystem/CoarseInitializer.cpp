@@ -130,7 +130,7 @@ namespace dso
 			Mat88f H, Hsc;
 			Vec8f b, bsc;
 			resetPoints(lvl); // 这里对顶层进行初始化!
-							  //[ ***step 4*** ] 迭代之前计算能量, Hessian等
+			//[ ***step 4*** ] 迭代之前计算能量, Hessian等
 			Vec3f resOld = calcResAndGS(lvl, H, b, Hsc, bsc, refToNew_current, refToNew_aff_current, false);
 			applyStep(lvl); // 新的能量付给旧的
 
@@ -326,7 +326,7 @@ namespace dso
 
 	//* 计算能量函数和Hessian矩阵, 以及舒尔补, sc代表Schur
 	// calculates residual, Hessian and Hessian-block neede for re-substituting depth.
-	Vec3f CoarseInitializer::calcResAndGS(
+	Vec3f CoarseInitializer:: calcResAndGS(
 		int lvl, Mat88f &H_out, Vec8f &b_out,
 		Mat88f &H_out_sc, Vec8f &b_out_sc,
 		const SE3 &refToNew, AffLight refToNew_aff,
@@ -801,6 +801,12 @@ namespace dso
 		}
 	}
 
+	/**
+	 * @brief 设置第一帧
+	 * 
+	 * @param[in] HCalib   相机内参的类（包括相机内参和一些优化使用的参数）？？为啥都加Hessian的后缀？
+	 * @param[in] newFrameHessian 
+	 */
 	void CoarseInitializer::setFirst(CalibHessian *HCalib, FrameHessian *newFrameHessian)
 	{
 		//[ ***step 1*** ] 计算图像每层的内参
@@ -809,10 +815,12 @@ namespace dso
 
 		PixelSelector sel(w[0], h[0]); // 像素选择
 
+		//; 像素的状态，是否被选择
 		float *statusMap = new float[w[0] * h[0]];
 		bool *statusMapB = new bool[w[0] * h[0]];
 
-		float densities[] = {0.03, 0.05, 0.15, 0.5, 1}; // 不同层取得点密度
+		//; 金字塔越往上像素点越少，所以点占的比例越多
+		float densities[] = {0.03, 0.05, 0.15, 0.5, 1}; // 不同层取的点密度，越往上取的点密度越大
 		for (int lvl = 0; lvl < pyrLevelsUsed; lvl++)
 		{
 			//[ ***step 2*** ] 针对不同层数选择大梯度像素, 第0层比较复杂1d, 2d, 4d大小block来选择3个层次的像素
@@ -878,13 +886,13 @@ namespace dso
 		}
 		delete[] statusMap;
 		delete[] statusMapB;
+
 		//[ ***step 4*** ] 计算点的最近邻和父点
 		makeNN();
 
 		// 参数初始化
-
 		thisToNext = SE3();
-		snapped = false;
+		snapped = false;   //; 初始化的时候位移是否足够大了
 		frameID = snappedAt = 0;
 
 		for (int i = 0; i < pyrLevelsUsed; i++)

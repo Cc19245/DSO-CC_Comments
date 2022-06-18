@@ -21,7 +21,6 @@
 * along with DSO. If not, see <http://www.gnu.org/licenses/>.
 */
 
-
 #pragma once
 
 #include "util/ImageAndExposure.h"
@@ -29,135 +28,139 @@
 #include "util/NumType.h"
 #include "Eigen/Core"
 
-
-
-
-
 namespace dso
 {
 
+	class PhotometricUndistorter
+	{
+	public:
+		EIGEN_MAKE_ALIGNED_OPERATOR_NEW;
+		PhotometricUndistorter(std::string file, std::string noiseImage, std::string vignetteImage, int w_, int h_);
+		~PhotometricUndistorter();
 
-class PhotometricUndistorter
-{
-public:
-	EIGEN_MAKE_ALIGNED_OPERATOR_NEW;
-	PhotometricUndistorter(std::string file, std::string noiseImage, std::string vignetteImage, int w_, int h_);
-	~PhotometricUndistorter();
+		// removes readout noise, and converts to irradiance.
+		// affine normalizes values to 0 <= I < 256.
+		// raw irradiance = a*I + b.
+		// output will be written in [output].
+		template <typename T>
+		void processFrame(T *image_in, float exposure_time, float factor = 1);
+		void unMapFloatImage(float *image);
 
-	// removes readout noise, and converts to irradiance.
-	// affine normalizes values to 0 <= I < 256.
-	// raw irradiance = a*I + b.
-	// output will be written in [output].
-	template<typename T> void processFrame(T* image_in, float exposure_time, float factor=1);
-	void unMapFloatImage(float* image);
+		//; 光度校正后的图像
+		ImageAndExposure *output; //< 光度矫正后的图像, 注意这里是辐照B、曝光时间t
 
-	ImageAndExposure* output; //!< 光度矫正后的图像
+		float *getG()
+		{
+			if (!valid)
+				return 0;
+			else
+				return G;
+		};
 
-	float* getG() {if(!valid) return 0; else return G;};
-private:
-    float G[256*256]; 	//!< 响应函数值逆变换
-    int GDepth;			//!< 响应函数值的个数 
-	float* vignetteMap;
-	float* vignetteMapInv;
-	int w,h;
-	bool valid;
-};
+	private:
+		//! 响应函数的逆变换配置文件中只有256个数值，这里为什么申请了256*256个？
+		float G[256 * 256]; //< 响应函数值逆变换
+		int GDepth;			//< 响应函数值的个数
+		float *vignetteMap;
+		float *vignetteMapInv;
+		int w, h; 	//; 输出图像的宽高
+		bool valid; //; 在光度畸变的构造函数最后，成功读取完gamma畸变文件、渐晕图片之后，这个变成true
+	};
 
+	class Undistort
+	{
+	public:
+		EIGEN_MAKE_ALIGNED_OPERATOR_NEW;
+		virtual ~Undistort();
 
-class Undistort
-{
-public:
-	EIGEN_MAKE_ALIGNED_OPERATOR_NEW;
-	virtual ~Undistort();
+		virtual void distortCoordinates(float *in_x, float *in_y, float *out_x, float *out_y, int n) const = 0;
 
-	virtual void distortCoordinates(float* in_x, float* in_y, float* out_x, float* out_y, int n) const = 0;
+		inline const Mat33 getK() const { return K; };
+		inline const Eigen::Vector2i getSize() const { return Eigen::Vector2i(w, h); };
+		inline const VecX getOriginalParameter() const { return parsOrg; };
+		inline const Eigen::Vector2i getOriginalSize() { return Eigen::Vector2i(wOrg, hOrg); };
+		inline bool isValid() { return valid; };
 
-	
-	inline const Mat33 getK() const {return K;};
-	inline const Eigen::Vector2i getSize() const {return Eigen::Vector2i(w,h);};
-	inline const VecX getOriginalParameter() const {return parsOrg;};
-	inline const Eigen::Vector2i getOriginalSize() {return Eigen::Vector2i(wOrg,hOrg);};
-	inline bool isValid() {return valid;};
+		template <typename T>
+		ImageAndExposure *undistort(const MinimalImage<T> *image_raw, float exposure = 0, double timestamp = 0, float factor = 1) const;
+		static Undistort *getUndistorterForFile(std::string configFilename, std::string gammaFilename, std::string vignetteFilename);
 
-	template<typename T>
-	ImageAndExposure* undistort(const MinimalImage<T>* image_raw, float exposure=0, double timestamp=0, float factor=1) const;
-	static Undistort* getUndistorterForFile(std::string configFilename, std::string gammaFilename, std::string vignetteFilename);
+		void loadPhotometricCalibration(std::string file, std::string noiseImage, std::string vignetteImage);
 
-	void loadPhotometricCalibration(std::string file, std::string noiseImage, std::string vignetteImage);
+		PhotometricUndistorter *photometricUndist; // 光度矫正类
 
-	PhotometricUndistorter* photometricUndist; // 光度矫正类
+	protected:
+		//; 输出图像宽高、输入图像宽高、？？
+		int w, h, wOrg, hOrg, wUp, hUp; //!< 输入图像大小, 相机原像素大小,
 
-protected:
-    int w, h, wOrg, hOrg, wUp, hUp;	//!< 输入图像大小, 相机原像素大小, 
-    int upsampleUndistFactor;
-	Mat33 K;						//!< 矫正后的相机参数(也可能是更改了的标定输出)
-	VecX parsOrg;					//!< 原来相机参数
-	bool valid;						//!< 参数有效
-	bool passthrough;				//!< 通过??? 不知道这个是干嘛的
+		int upsampleUndistFactor;
+		//; 输出图像 和 有效归一化平面范围 之间的相机投影参数，很多资料中也把它称为新的内参
+		Mat33 K; //!< 矫正后的相机参数(也可能是更改了的标定输出)
+		//; 原来的相机参数，就是输入图像的投影参数，包含相机投影参数和畸变参数
+		VecX parsOrg; //!< 原来相机参数
 
-	float* remapX;					//!< 矫正所用的remap, 无畸变与畸变的映射
-	float* remapY;
+		bool valid;		  //!< 参数有效
+		bool passthrough; //!< 通过??? 不知道这个是干嘛的
 
-	void applyBlurNoise(float* img) const;
+		//; 输出图像和输入图像之间的坐标对应关系，类似一个map，键是输出图像的位置，值是这个像素对应在输入图像中的位置
+		float *remapX; //!< 矫正所用的remap, 无畸变与畸变的映射
+		float *remapY;
 
-	void makeOptimalK_crop();
-	void makeOptimalK_full();
+		void applyBlurNoise(float *img) const;
 
-	void readFromFile(const char* configFileName, int nPars, std::string prefix = "");
-};
+		void makeOptimalK_crop();
+		void makeOptimalK_full();
 
-class UndistortFOV : public Undistort
-{
-public:
-	EIGEN_MAKE_ALIGNED_OPERATOR_NEW;
+		void readFromFile(const char *configFileName, int nPars, std::string prefix = "");
+	};
 
-    UndistortFOV(const char* configFileName, bool noprefix);
-	~UndistortFOV();
-	void distortCoordinates(float* in_x, float* in_y, float* out_x, float* out_y, int n) const;
+	class UndistortFOV : public Undistort
+	{
+	public:
+		EIGEN_MAKE_ALIGNED_OPERATOR_NEW;
 
-};
+		UndistortFOV(const char *configFileName, bool noprefix);
+		~UndistortFOV();
+		void distortCoordinates(float *in_x, float *in_y, float *out_x, float *out_y, int n) const;
+	};
 
-class UndistortRadTan : public Undistort
-{
-public:
-	EIGEN_MAKE_ALIGNED_OPERATOR_NEW;
-    UndistortRadTan(const char* configFileName, bool noprefix);
-    ~UndistortRadTan();
-    void distortCoordinates(float* in_x, float* in_y, float* out_x, float* out_y, int n) const;
+	class UndistortRadTan : public Undistort
+	{
+	public:
+		EIGEN_MAKE_ALIGNED_OPERATOR_NEW;
+		UndistortRadTan(const char *configFileName, bool noprefix);
+		~UndistortRadTan();
+		void distortCoordinates(float *in_x, float *in_y, float *out_x, float *out_y, int n) const;
+	};
 
-};
+	class UndistortEquidistant : public Undistort
+	{
+	public:
+		EIGEN_MAKE_ALIGNED_OPERATOR_NEW;
+		UndistortEquidistant(const char *configFileName, bool noprefix);
+		~UndistortEquidistant();
+		void distortCoordinates(float *in_x, float *in_y, float *out_x, float *out_y, int n) const;
+	};
 
-class UndistortEquidistant : public Undistort
-{
-public:
-	EIGEN_MAKE_ALIGNED_OPERATOR_NEW;
-    UndistortEquidistant(const char* configFileName, bool noprefix);
-    ~UndistortEquidistant();
-    void distortCoordinates(float* in_x, float* in_y, float* out_x, float* out_y, int n) const;
+	class UndistortPinhole : public Undistort
+	{
+	public:
+		EIGEN_MAKE_ALIGNED_OPERATOR_NEW;
+		UndistortPinhole(const char *configFileName, bool noprefix);
+		~UndistortPinhole();
+		void distortCoordinates(float *in_x, float *in_y, float *out_x, float *out_y, int n) const;
 
-};
+	private:
+		float inputCalibration[8];
+	};
 
-class UndistortPinhole : public Undistort
-{
-public:
-	EIGEN_MAKE_ALIGNED_OPERATOR_NEW;
-    UndistortPinhole(const char* configFileName, bool noprefix);
-	~UndistortPinhole();
-	void distortCoordinates(float* in_x, float* in_y, float* out_x, float* out_y, int n) const;
-
-private:
-	float inputCalibration[8];
-};
-
-class UndistortKB : public Undistort
-{
-public:
-	EIGEN_MAKE_ALIGNED_OPERATOR_NEW;
-    UndistortKB(const char* configFileName, bool noprefix);
-	~UndistortKB();
-	void distortCoordinates(float* in_x, float* in_y, float* out_x, float* out_y, int n) const;
-
-};
+	class UndistortKB : public Undistort
+	{
+	public:
+		EIGEN_MAKE_ALIGNED_OPERATOR_NEW;
+		UndistortKB(const char *configFileName, bool noprefix);
+		~UndistortKB();
+		void distortCoordinates(float *in_x, float *in_y, float *out_x, float *out_y, int n) const;
+	};
 
 }
-
