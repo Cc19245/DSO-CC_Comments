@@ -43,10 +43,10 @@ namespace dso
 
 		currentPotential = 3;
 
-		// 32*32个块进行计算阈值
+		// 划分的所有32*32大小的block进行计算阈值
 		gradHist = new int[100 * (1 + w / 32) * (1 + h / 32)];
-		ths = new float[(w / 32) * (h / 32) + 100];
-		thsSmoothed = new float[(w / 32) * (h / 32) + 100];
+		ths = new float[(w / 32) * (h / 32) + 100];  //; 每个block的阈值（为啥要+100？）
+		thsSmoothed = new float[(w / 32) * (h / 32) + 100];   //; 均值滤波之后的block阈值
 
 		allowFast = false;
 		gradHistFrame = 0;
@@ -60,11 +60,18 @@ namespace dso
 		delete[] thsSmoothed;
 	}
 
-	//* 占据 below% 的梯度值作为阈值
+	/**
+	 * @brief 求32*32block中的梯度直方图的阈值
+	 * 
+	 * @param[in] hist   传入的梯度1-49个格的直方图
+	 * @param[in] below  计算阈值占比多少，传入的是0.5，也就是50%
+	 * @return int  计算得到的阈值是多少
+	 */
 	int computeHistQuantil(int *hist, float below)
 	{
+		// hist[0]是block中所有像素的个数，*below就得到了梯度的阈值
 		int th = hist[0] * below + 0.5f; // 最低的像素个数
-		for (int i = 0; i < 90; i++)	 // 90? 这么随便....
+		for (int i = 0; i < 90; i++)	 // 90? 这么随便....（其实已经确定了hist最大索引49，这里用90不会出问题，不过确实随意了点）
 		{
 			th -= hist[i + 1]; // 梯度值为0-i的所有像素个数占 below %
 			if (th < 0)
@@ -76,7 +83,7 @@ namespace dso
 	//* 生成梯度直方图, 为每个block计算阈值
 	void PixelSelector::makeHists(const FrameHessian *const fh)
 	{
-		gradHistFrame = fh;
+		gradHistFrame = fh;  //; 赋值给类成员变量，防止下一次再次计算梯度直方图
 		float *mapmax0 = fh->absSquaredGrad[0]; //第0层梯度平方和
 
 		// weight and height
@@ -84,19 +91,22 @@ namespace dso
 		int h = hG[0];
 
 		//!还是每个blocks大小为32*32, 不是论文里的32*32个网格
-		int w32 = w / 32;
+		int w32 = w / 32;  //; 一共可以划分成多少个32*32的网格
 		int h32 = h / 32;
 		thsStep = w32;
 
+		// Step 1 遍历所有的32*32网格, 求每个网格内的梯度的阈值
 		for (int y = 0; y < h32; y++)
 		{
 			for (int x = 0; x < w32; x++)
 			{
 				float *map0 = mapmax0 + 32 * x + 32 * y * w; // y行x列的格
+				// 利用数组hist0[]存储梯度平方和（从1-49）相同的像素个数，hist0[0]存储整个块中的像素数量
 				int *hist0 = gradHist;						 // + 50*(x+y*w32);
 				memset(hist0, 0, sizeof(int) * 50);			 // 分成50格
 
 				for (int j = 0; j < 32; j++)
+				{
 					for (int i = 0; i < 32; i++)
 					{
 						int it = i + 32 * x; // 该格里第(j,i)像素的整个图像坐标
@@ -109,12 +119,14 @@ namespace dso
 						hist0[g + 1]++; // 1-49 存相应梯度个数
 						hist0[0]++;		// 所有的像素个数
 					}
-				// 得到每一block的阈值
+				}
+				// 得到每一block的梯度阈值， setting_minGradHistCut = 0.5，setting_minGradHistAdd = 7
+				//; 但是这里注意，从block中算出来的梯度中位数并不是最终结果，还人工添加了一个梯度偏置7
 				ths[x + y * w32] = computeHistQuantil(hist0, setting_minGradHistCut) + setting_minGradHistAdd;
 			}
 		}
 
-		// 使用3*3的窗口求平均值来平滑
+		// Step 2 遍历所有的block, 使用3*3的窗口求平均值来平滑求得的梯度阈值
 		for (int y = 0; y < h32; y++)
 		{
 			for (int x = 0; x < w32; x++)
@@ -195,7 +207,7 @@ namespace dso
 			// the number of selected pixels behaves approximately as
 			// K / (pot+1)^2, where K is a scene-dependent constant.
 			// we will allow sub-selecting pixels by up to a quotia of 0.25, otherwise we will re-select.
-			//[ ***step 1*** ] 没有计算直方图, 以及选点的阈值, 则调用函数生成block阈值
+			// Step 1 没有计算直方图, 以及选点的阈值, 则调用函数生成block阈值
 			if (fh != gradHistFrame)
 			{
 				//; 生成梯度直方图, 为每个block计算阈值。简单理解就是先给每一个小块计算阈值，然后用3x3的直方图对阈值进行滤波
@@ -203,21 +215,21 @@ namespace dso
 			}
 
 			// select!
-			//[ ***step 2*** ] 在当前帧上选择符合条件的像素
+			// Step 2 在当前帧上选择符合条件的像素
 			Eigen::Vector3i n = this->select(fh, map_out, currentPotential, thFactor);
 
 			// sub-select!
 			numHave = n[0] + n[1] + n[2]; // 选择得到的点
 			quotia = numWant / numHave;	  // 得到的 与 想要的 比例
 
-			//[ ***step 3*** ] 计算新的采像素点的, 范围大小, 相当于动态网格了, pot越小取得点越多
+			// Step 3 计算新的采像素点的, 范围大小, 相当于动态网格了, pot越小取得点越多
 			// by default we want to over-sample by 40% just to be sure.
 			float K = numHave * (currentPotential + 1) * (currentPotential + 1); // 相当于覆盖的面积, 每一个像素对应一个pot*pot
 			idealPotential = sqrtf(K / numWant) - 1;							 // round down.
 			if (idealPotential < 1)
 				idealPotential = 1;
 
-			//[ ***step 4*** ] 想要的数目和已经得到的数目, 大于或小于0.25都会重新采样一次
+			// Step 4 想要的数目和已经得到的数目, 大于或小于0.25都会重新采样一次
 			if (recursionsLeft > 0 && quotia > 1.25 && currentPotential > 1)
 			{
 				//re-sample to get more points!
@@ -251,7 +263,7 @@ namespace dso
 			}
 		}
 
-		//[ ***step 5*** ] 现在提取的还是多, 随机删除一些点
+		// Step 5 现在提取的还是多, 随机删除一些点
 		int numHaveSub = numHave;
 		if (quotia < 0.95)
 		{
