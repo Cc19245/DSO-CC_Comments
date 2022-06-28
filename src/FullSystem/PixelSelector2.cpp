@@ -188,9 +188,9 @@ namespace dso
 	 * @ param: 	fh				帧Hessian数据结构
 	 * @			map_out			选出的地图点
 	 * @			density		 	每一金字塔层要的点数(密度)
-	 * @			recursionsLeft	最大递归次数
-	 * @			plot			画图
-	 * @			thFactor		阈值因子
+	 * @			recursionsLeft	最大递归次数, 调用是1
+	 * @			plot			是否画图（也就是画出来提取的像素点）,调用是false
+	 * @			thFactor		阈值因子，调用是2
 	 * @
 	 * @ note:		使用递归
 	 *******************************/
