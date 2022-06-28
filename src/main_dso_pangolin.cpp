@@ -374,9 +374,11 @@ int main(int argc, char **argv)
 	boost::thread exThread = boost::thread(exitThread);
 
 	// Step 2 ：读取相机参数文件，在构造函数中执行两个步骤：
-	//;   1. 根据相机参数建立相机畸变模型  2.根据光度参数得到非线性仿射函数G、镜头渐晕
+	//; 1. 根据相机参数建立相机畸变模型  2.根据光度参数得到非线性仿射函数G、镜头渐晕
 	ImageFolderReader *reader = new ImageFolderReader(source, calib, gammaCalib, vignette);
-	//; 这里github上readme中作者说了，需要在初始化之前设置相机内参和视频分辨率，虽然可能不是最方便的方式
+	//; 2.这里github上readme中作者说了，需要在初始化之前设置相机内参和视频分辨率，虽然可能不是最方便的方式
+	//;  2.1. 根据上面的图像去畸变类，得到输出图像的宽、高、投影矩阵
+	//;  2.2. 计算能够构成的图像金字塔，并且计算各层的宽、高、投影矩阵
 	reader->setGlobalCalibration();
 
 	//; 1.前面的setting_photometricCalibration是2，可以认为是代码要求进行gamma和渐晕矫正？
@@ -404,7 +406,7 @@ int main(int argc, char **argv)
 
 	// Step 3 new一个系统类
 	FullSystem *fullSystem = new FullSystem();
-	//; 设置非线性响应函数，注意其中会给类成员变量 Hcalib 赋值
+	//! 设置非线性响应函数，注意其中会给类成员变量 Hcalib 赋值
 	fullSystem->setGammaFunction(reader->getPhotometricGamma()); //; 设置非线性响应函数
 	fullSystem->linearizeOperation = (playbackSpeed == 0);		 //; 如果=0，不强制实时执行
 

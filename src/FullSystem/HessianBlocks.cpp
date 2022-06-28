@@ -130,48 +130,74 @@ namespace dso
 		immaturePoints.clear();
 	}
 
-	//* 计算各层金字塔图像的像素值和梯度
+	/**
+	 * @brief  计算当前帧图像的各层金字塔图像的像素值和梯度
+	 * 
+	 * @param[in] color   传入的经过广度校正后的图像辐照值
+	 * @param[in] HCalib  相机内参hessian
+	 */
 	void FrameHessian::makeImages(float *color, CalibHessian *HCalib)
 	{
 		// 每一层创建图像值, 和图像梯度的存储空间
-		for (int i = 0; i < pyrLevelsUsed; i++)
+		for (int i = 0; i < pyrLevelsUsed; i++)   // pyrLevelsUsed图像金字塔层数，设置为6
 		{
-			dIp[i] = new Eigen::Vector3f[wG[i] * hG[i]];
-			absSquaredGrad[i] = new float[wG[i] * hG[i]];
+			//; 3维向量的三个分量分别是：辐照值（或者简单认为没有去光度畸变的灰度值）、x方向梯度、y方向梯度
+			dIp[i] = new Eigen::Vector3f[wG[i] * hG[i]];   //; wG[i]/hG[i]应该是每一层图像的宽高
+			//; x和y方向梯度的平方和
+			absSquaredGrad[i] = new float[wG[i] * hG[i]];  
 		}
 		dI = dIp[0]; // 原来他们指向同一个地方
+		
+		/*
+		d=dIp[0];  获取金字塔第0层，若要获取其他层，修改中括号里面即可；
+		d[idx][0]  表示图像金字塔第0层，idx位置处的像素的像素灰度值;(这是因为DSO中
+					 存储图像像素值都是采用一维数组来表示，类似于opencv里面的data数组。)
+		d[idx][1]  表示图像金字塔第0层，idx位置处的像素的x方向的梯度
+		d[idx][2]  表示图像金字塔第0层，idx位置处的像素的y方向的梯度
+		abs=absSquaredGrad[1]; ///获取金字塔第1层，若要获取其他层，修改中括号里面即可；
+		abs[idx]   表示图像金字塔第1层，，idx位置处的像素x,y方向的梯度平方和
+		*/
 
 		// make d0
-		int w = wG[0]; // 零层weight
-		int h = hG[0]; // 零层height
+		int w = wG[0]; // 零层宽
+		int h = hG[0]; // 零层高
 		for (int i = 0; i < w * h; i++)
-			dI[i][0] = color[i];
+			dI[i][0] = color[i];  //; 最后一个索引0是Vector3d的第0个位置，即辐照
 
+		// 遍历所有层的金字塔
 		for (int lvl = 0; lvl < pyrLevelsUsed; lvl++)
 		{
-			int wl = wG[lvl], hl = hG[lvl]; // 该层图像大小
-			Eigen::Vector3f *dI_l = dIp[lvl];
+			int wl = wG[lvl], hl = hG[lvl]; // 当前层图像大小
+			Eigen::Vector3f *dI_l = dIp[lvl];  // 当前层图像的Vector3d值
+			float *dabs_l = absSquaredGrad[lvl];  // 当前层图像的梯度平方和
 
-			float *dabs_l = absSquaredGrad[lvl];
+			// Step 1 : 计算各层的像素值，只要不是第0层的金字塔（即输出图像），也就是生成第1层向上的那些金字塔的像素值
 			if (lvl > 0)
 			{
-				int lvlm1 = lvl - 1;
-				int wlm1 = wG[lvlm1]; // 列数
-				Eigen::Vector3f *dI_lm = dIp[lvlm1];
+				int lvlm1 = lvl - 1;  //; 当前层图像的下一层索引
+				int wlm1 = wG[lvlm1]; //; 下一层图像的宽度
+				Eigen::Vector3f *dI_lm = dIp[lvlm1];  //; 下一层图像的Vector3d值
 
-				// 像素4合1, 生成金字塔
+				// 下层图像的像素4合1求平均值得到上层图像的像素值, 生成金字塔
 				for (int y = 0; y < hl; y++)
+				{
 					for (int x = 0; x < wl; x++)
 					{
+						// 上层金字塔图像的像素值是由下层图像的4个像素值均匀采样得到的。
+						// 下述代码中dI_l表示上层金字塔图像首地址，dI_lm表示下层图像金字塔的首地址。
 						dI_l[x + y * wl][0] = 0.25f * (dI_lm[2 * x + 2 * y * wlm1][0] +
 													   dI_lm[2 * x + 1 + 2 * y * wlm1][0] +
 													   dI_lm[2 * x + 2 * y * wlm1 + wlm1][0] +
 													   dI_lm[2 * x + 1 + 2 * y * wlm1 + wlm1][0]);
 					}
+				}
 			}
 
-			for (int idx = wl; idx < wl * (hl - 1); idx++) // 第二行开始
+			// Step 2 : 计算各层的梯度值
+			for (int idx = wl; idx < wl * (hl - 1); idx++) // 注意从第二行的像素开始算
 			{
+				// 梯度的求取：利用前后两个像素的差值作为x方向的梯度，
+				//   利用上下两个像素的差值作为y方向的梯度，注意会跳过边缘像素点的梯度计算。
 				float dx = 0.5f * (dI_l[idx + 1][0] - dI_l[idx - 1][0]);
 				float dy = 0.5f * (dI_l[idx + wl][0] - dI_l[idx - wl][0]);
 
@@ -185,10 +211,13 @@ namespace dso
 
 				dabs_l[idx] = dx * dx + dy * dy; // 梯度平方
 
+				// HCalib != 0说明有相机校正类，这个一般都满足。
+				// setting_gammaWeightsPixelSelect配置文件中设置的是1，注释说如果是1就是用原始像素，否则使用辐照
 				if (setting_gammaWeightsPixelSelect == 1 && HCalib != 0)
 				{
 					//! 乘上响应函数, 变换回正常的颜色, 因为光度矫正时 I = G^-1(I) / V(x)
 					float gw = HCalib->getBGradOnly((float)(dI_l[idx][0]));
+					//; 这里把梯度恢复成像素梯度，也就是在去除光度响应函数之前的值
 					dabs_l[idx] *= gw * gw; // convert to gradient of original color space (before removing response).
 				}
 			}

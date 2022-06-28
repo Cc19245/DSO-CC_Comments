@@ -824,7 +824,7 @@ namespace dso
 		FrameShell *shell = new FrameShell();  //; Frame的简化，位姿等变量
 		shell->camToWorld = SE3();			   // no lock required, as fh is not used anywhere yet.
 		shell->aff_g2l = AffLight(0, 0);	   //; 光度变化系数a, b
-		shell->marginalizedAt = shell->id = allFrameHistory.size();
+		shell->marginalizedAt = shell->id = allFrameHistory.size();  //; shell->id是真正处理的帧的序号
 		shell->timestamp = image->timestamp;
 		shell->incoming_id = id; //; 这个id是图像在数据集文件夹中的序号
 		fh->shell = shell;		 //; FrameHessian持有FrameShell
@@ -833,21 +833,22 @@ namespace dso
 
 		// Step 3 得到曝光时间, 生成金字塔, 计算整个图像梯度
 		// =========================== make Images / derivatives etc. =========================
-		fh->ab_exposure = image->exposure_time;
-		fh->makeImages(image->image, &Hcalib);
+		fh->ab_exposure = image->exposure_time;  //; ms单位的图像曝光时间
+		// 计算当前图像帧各层金字塔的像素灰度值及梯度
+		fh->makeImages(image->image, &Hcalib);   //; Hcalib是相机内参，但是主要还是相机的辐照参数
 
 		// Step 4 进行初始化
 		if (!initialized)
 		{
 			// use initializer!
-			//[ ***step 4.1*** ] 加入第一帧
+			// Step 4.1 加入第一帧
 			if (coarseInitializer->frameID < 0) // first frame set. fh is kept by coarseInitializer.
 			{
 				coarseInitializer->setFirst(&Hcalib, fh);
 			}
 			else if (coarseInitializer->trackFrame(fh, outputWrapper)) // if SNAPPED
 			{
-				//[ ***step 4.2*** ] 跟踪成功, 完成初始化
+				// Step 4.2 跟踪成功, 完成初始化
 				initializeFromInitializer(fh);
 				lock.unlock();
 				deliverTrackedFrame(fh, true);

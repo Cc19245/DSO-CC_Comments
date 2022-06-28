@@ -194,7 +194,12 @@ public:
 	{
 		int w_out, h_out;
 		Eigen::Matrix3f K;
+		// 1.获取前面根据相机内参文件建立的内参矩阵
 		getCalibMono(K, w_out, h_out);
+
+		// 2.建立金字塔，各层金字塔之间的比例为2，并且计算各层金字塔的内参
+		//   根据图像输出大小确定金字塔层数，原始图像为第0层，最高层为pyrLevelsUsed-1层。
+		//   注意：最高层图像的高和宽要大于100,并且pyrLevelsUsed要大于等于3。
 		setGlobalCalib(w_out, h_out, K);
 	}
 

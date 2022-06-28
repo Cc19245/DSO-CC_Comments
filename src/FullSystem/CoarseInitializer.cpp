@@ -805,43 +805,44 @@ namespace dso
 	 * @brief 设置第一帧
 	 * 
 	 * @param[in] HCalib   相机内参的类（包括相机内参和一些优化使用的参数）？？为啥都加Hessian的后缀？
-	 * @param[in] newFrameHessian 
+	 * @param[in] newFrameHessian  输入的图像帧
 	 */
 	void CoarseInitializer::setFirst(CalibHessian *HCalib, FrameHessian *newFrameHessian)
 	{
-		//[ ***step 1*** ] 计算图像每层的内参
-		makeK(HCalib);
+		// Step 1 计算图像每层的内参
+		makeK(HCalib);  //计算每层图像金字塔的内参，用于后续的金字塔跟踪模型
 		firstFrame = newFrameHessian;
 
+		// 进行像素点选取的相关类的初始实例化以及变量的初始定义
 		PixelSelector sel(w[0], h[0]); // 像素选择
-
-		//; 像素的状态，是否被选择
+		//; 这两个变量中对应位置的值表示该位置的像素点是否被选取
 		float *statusMap = new float[w[0] * h[0]];
 		bool *statusMapB = new bool[w[0] * h[0]];
-
 		//; 金字塔越往上像素点越少，所以点占的比例越多
 		float densities[] = {0.03, 0.05, 0.15, 0.5, 1}; // 不同层取的点密度，越往上取的点密度越大
+		// 遍历所有金字塔
 		for (int lvl = 0; lvl < pyrLevelsUsed; lvl++)
 		{
-			//[ ***step 2*** ] 针对不同层数选择大梯度像素, 第0层比较复杂1d, 2d, 4d大小block来选择3个层次的像素
+			// Step 2 针对不同层数选择大梯度像素, 第0层比较复杂1d, 2d, 4d大小block来选择3个层次的像素
 			sel.currentPotential = 3; // 设置网格大小，3*3大小格
-			int npts;				  // 选择的像素数目
-			if (lvl == 0)			  // 第0层提取特征像素
+			int npts;		// 选出的点的数量
+			if (lvl == 0)	// 第0层（原始图像）提取特征像素
 				npts = sel.makeMaps(firstFrame, statusMap, densities[lvl] * w[0] * h[0], 1, false, 2);
 			else // 其它层则选出goodpoints
-				npts = makePixelStatus(firstFrame->dIp[lvl], statusMapB, w[lvl], h[lvl], densities[lvl] * w[0] * h[0]);
+				npts = makePixelStatus(firstFrame->dIp[lvl], statusMapB, 
+					w[lvl], h[lvl], densities[lvl] * w[0] * h[0]);
 
 			// 如果点非空, 则释放空间, 创建新的
 			if (points[lvl] != 0)
 				delete[] points[lvl];
-			points[lvl] = new Pnt[npts];
+			points[lvl] = new Pnt[npts];   // 创建npts个点Pnt结构体的数组，存储提取出来的npts个点
 
 			// set idepth map to initially 1 everywhere.
 			int wl = w[lvl], hl = h[lvl]; // 每一层的图像大小
 			Pnt *pl = points[lvl];		  // 每一层上的点
 			int nl = 0;
 			// 要留出pattern的空间, 2 border
-			//[ ***step 3*** ] 在选出的像素中, 添加点信息
+			// Step 3 在选出的像素中, 添加点信息
 			for (int y = patternPadding + 1; y < hl - patternPadding - 2; y++)
 				for (int x = patternPadding + 1; x < wl - patternPadding - 2; x++)
 				{
@@ -850,6 +851,7 @@ namespace dso
 					if ((lvl != 0 && statusMapB[x + y * wl]) || (lvl == 0 && statusMap[x + y * wl] != 0))
 					{
 						//assert(patternNum==9);
+						//; 选取的像素点相关值的初始化，nl为像素点的ID
 						pl[nl].u = x + 0.1; //? 加0.1干啥
 						pl[nl].v = y + 0.1;
 						pl[nl].idepth = 1;
@@ -887,10 +889,11 @@ namespace dso
 		delete[] statusMap;
 		delete[] statusMapB;
 
-		//[ ***step 4*** ] 计算点的最近邻和父点
+		// Step 4 选点之后，利用makeNN建立kdtree, 计算点的最近邻和父点
 		makeNN();
 
-		// 参数初始化
+		// 设置一些变量的值，thisToNext表示当前帧到下一帧的位姿变换，
+		// snapped frameID snappedAt这三个变量在后续判断是否跟踪了足够多的图像帧能够初始化时用到。
 		thisToNext = SE3();
 		snapped = false;   //; 初始化的时候位移是否足够大了
 		frameID = snappedAt = 0;
