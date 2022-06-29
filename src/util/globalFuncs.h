@@ -62,13 +62,16 @@ namespace dso
 
 	EIGEN_ALWAYS_INLINE Eigen::Vector3f getInterpolatedElement33(const Eigen::Vector3f *const mat, const float x, const float y, const int width)
 	{
+		// 整数坐标
 		int ix = (int)x;
 		int iy = (int)y;
+		// 小数坐标
 		float dx = x - ix;
 		float dy = y - iy;
 		float dxdy = dx * dy;
 		const Eigen::Vector3f *bp = mat + ix + iy * width;
 
+		// 双线性插值，得到小数坐标对应的像素值
 		return dxdy * *(const Eigen::Vector3f *)(bp + 1 + width) + (dy - dxdy) * *(const Eigen::Vector3f *)(bp + width) + (dx - dxdy) * *(const Eigen::Vector3f *)(bp + 1) + (1 - dx - dy + dxdy) * *(const Eigen::Vector3f *)(bp);
 	}
 

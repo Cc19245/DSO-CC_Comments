@@ -1164,7 +1164,19 @@ namespace dso
 			assert(idx == 4 * 45);
 		}
 
-		// 计算一个9维向量相乘, 得到9*9矩阵
+		/**
+		 * @brief 计算9x1向量 乘以 1x9向量得到的9x9矩阵（传入几个变量，向量就是几维的）
+		 *    注意这里使用128位，传入float是32位，所以一次可以计算4个点。这个是DSO最后使用的，所以其他加速可以不看
+		 * @param[in] J0 
+		 * @param[in] J1 
+		 * @param[in] J2 
+		 * @param[in] J3 
+		 * @param[in] J4 
+		 * @param[in] J5 
+		 * @param[in] J6 
+		 * @param[in] J7 
+		 * @param[in] J8 
+		 */
 		inline void updateSSE(
 			const __m128 J0, const __m128 J1,
 			const __m128 J2, const __m128 J3,
@@ -1172,11 +1184,11 @@ namespace dso
 			const __m128 J6, const __m128 J7,
 			const __m128 J8)
 		{
-			// 一共45个值
+			// 一共45个值, 9+8+7+6+5+4+3+2+1=45
 			float *pt = SSEData;
 			// 第一行9个值
-			_mm_store_ps(pt, _mm_add_ps(_mm_load_ps(pt), _mm_mul_ps(J0, J0)));
-			pt += 4;
+			_mm_store_ps(pt, _mm_add_ps(_mm_load_ps(pt), _mm_mul_ps(J0, J0)));  //; 相乘
+			pt += 4;  //; 这里为啥+4？不应该+1吗？
 			_mm_store_ps(pt, _mm_add_ps(_mm_load_ps(pt), _mm_mul_ps(J0, J1)));
 			pt += 4;
 			_mm_store_ps(pt, _mm_add_ps(_mm_load_ps(pt), _mm_mul_ps(J0, J2)));
@@ -1210,7 +1222,7 @@ namespace dso
 			pt += 4;
 			_mm_store_ps(pt, _mm_add_ps(_mm_load_ps(pt), _mm_mul_ps(J1, J8)));
 			pt += 4;
-
+			//; 第3行只需算7个，后面654321依次类推
 			_mm_store_ps(pt, _mm_add_ps(_mm_load_ps(pt), _mm_mul_ps(J2, J2)));
 			pt += 4;
 			_mm_store_ps(pt, _mm_add_ps(_mm_load_ps(pt), _mm_mul_ps(J2, J3)));
@@ -1516,6 +1528,21 @@ namespace dso
 		}
 
 		// 不使用对齐加速的, 带有权重的
+		/**
+		 * @brief 计算H矩阵中舒尔消元的部分，注意这里并没有SSE加速的操作，就是简单计算
+		 *     下面变量参考深蓝学院PPT P31
+		 * @param[in] J0  J0-J7是W部分的雅克比（注意是雅克比，不是W）
+		 * @param[in] J1 
+		 * @param[in] J2 
+		 * @param[in] J3 
+		 * @param[in] J4 
+		 * @param[in] J5 
+		 * @param[in] J6 
+		 * @param[in] J7 
+		 * @param[in] J8  J8是残差Bb部分的雅克比
+		 * @param[in] w   w就是V^-1，相当于就是一个权重
+		 * @param[in] off 
+		 */
 		inline void updateSingleWeighted(
 			float J0, float J1,
 			float J2, float J3,
@@ -1524,11 +1551,13 @@ namespace dso
 			float J8, float w,
 			int off = 0)
 		{
-
 			float *pt = SSEData + off;
+			// 第1行：9个值
 			*pt += J0 * J0 * w;
 			pt += 4;
-			J0 *= w;
+			//; 秀啊！作者逻辑真的是严密！这里J0只能在这里再*w，不能在上面就*，因为如果在上面就*了，后面的计算没有问题
+			//; 但是J0*w*J0的计算就变成了J0*w*w*J0了，这样就多*了一个w！
+			J0 *= w;   
 			*pt += J1 * J0;
 			pt += 4;
 			*pt += J2 * J0;
@@ -1546,6 +1575,7 @@ namespace dso
 			*pt += J8 * J0;
 			pt += 4;
 
+			// 第2行：8个值
 			*pt += J1 * J1 * w;
 			pt += 4;
 			J1 *= w;
@@ -1630,6 +1660,7 @@ namespace dso
 			*pt += J8 * J7;
 			pt += 4;
 
+			// 最后一行：1个值
 			*pt += J8 * J8 * w;
 			pt += 4;
 

@@ -76,10 +76,30 @@ namespace dso
 		delete[] JbBuffer_new;
 	}
 
+	/**
+	 * @brief 目的是优化两帧（ref frame 和 new frame）之间的相对状态和ref frame中所有点的逆深度
+	 *        注意下面所有的操作都是为了上面的这个目的！
+	 *     原文链接：https://blog.csdn.net/gbz3300255/article/details/109379330  
+	 * @param[in] newFrameHessian  新传入的图像帧
+	 * @param[in] wraps 显示对象
+	 * @return true 
+	 * @return false 
+	 */
+	/*
+	1.对于除第一帧外的后帧，trackFrame(fh, outputWrapper)，直接法（two frame direct image alignment）
+	  只利用第一帧与当前帧的数据，用高斯牛顿方法基于最小化光测误差，求解或优化参数，优化之前，变换矩阵初始化为
+	  单位阵、点的逆深度初始化为1，在这个过程中，优化的初值都是没有实际意义的，优化的结果也是很不准确的。
+    2.这个函数只有初始化用。
+	  初始化过程中最小化光度误差目的是确定第一帧每一个点的逆深度idepth（Jacobian 对应代码中的变量 dd）、
+	  第一帧和第二帧的相对位姿。两帧之间的参数用LM方法不断优化解高斯牛顿方程获得，参数包括：第一帧上特征点深度值，
+	  第一帧到当前帧的位姿变换，仿射参数。
+	  变换一共N(特征点个数) + 8(位姿+ 仿射系数)个解
+	*/
 	bool CoarseInitializer::trackFrame(FrameHessian *newFrameHessian, std::vector<IOWrap::Output3DWrapper *> &wraps)
 	{
-		newFrame = newFrameHessian;
-		//[ ***step 1*** ] 先显示新来的帧
+		newFrame = newFrameHessian;  //; 赋值给类成员变量中的新帧
+
+		// Step 1 先显示新来的帧
 		// 新的一帧, 在跟踪之前显示的
 		for (IOWrap::Output3DWrapper *ow : wraps)
 			ow->pushLiveFrame(newFrameHessian);
@@ -87,16 +107,20 @@ namespace dso
 		int maxIterations[] = {5, 5, 10, 30, 50};
 
 		//? 调参
+		// 这个是位移的阈值，如果平移的总偏移量超过2.5 / 150 就认为此帧是snapped为true的帧了.阈值怎么来的很蹊跷
 		alphaK = 2.5 * 2.5; //*freeDebugParam1*freeDebugParam1;
 		alphaW = 150 * 150; //*freeDebugParam2*freeDebugParam2;
+		// 近邻点对当前点逆深度的影响权重
 		regWeight = 0.8;	//*freeDebugParam4;
 		couplingWeight = 1; //*freeDebugParam5;
 
-		//[ ***step 2*** ] 初始化每个点逆深度为1, 初始化光度参数, 位姿SE3
+		// Step 2 初始化每个点逆深度为1, 初始化光度参数, 位姿SE3
+		// 对points点中的几个数据初始化过程, 只要出现过足够大的位移后 就不再对其初始化，直接拿着里面的值去连续优化5次
 		if (!snapped) //! snapped应该指的是位移足够大了，不够大就重新优化
 		{
-			// 初始化
+			//; 将两帧相对位姿平移部分置0
 			thisToNext.translation().setZero();
+			//; 遍历图像金字塔，为第1帧选择的特征点的相关信息设置初值
 			for (int lvl = 0; lvl < pyrLevelsUsed; lvl++)
 			{
 				int npts = numPoints[lvl];
@@ -110,33 +134,42 @@ namespace dso
 			}
 		}
 
+		// 设置两帧之间的相对位姿变换以及由曝光时间设置两帧的光度放射变换
 		SE3 refToNew_current = thisToNext;
 		AffLight refToNew_aff_current = thisToNext_aff;
 
-		// 如果都有仿射系数, 则估计一个初值
+		//firstFrame 是第一帧图像数据信息
+		//如果无光度标定那么曝光时间ab_exposure就是1.那么下面这个就是 a= 0 b = 0
 		if (firstFrame->ab_exposure > 0 && newFrame->ab_exposure > 0)
 			refToNew_aff_current = AffLight(logf(newFrame->ab_exposure / firstFrame->ab_exposure), 0); // coarse approximation.
 
 		Vec3f latestRes = Vec3f::Zero();
+		
+		// Step 3 金字塔跟踪模型（重点）：对金字塔每层进行跟踪，由最高层开始，构建残差进行优化
 		// 从顶层开始估计
 		for (int lvl = pyrLevelsUsed - 1; lvl >= 0; lvl--)
 		{
-
 			//[ ***step 3*** ] 使用计算过的上一层来初始化下一层
-			// 顶层未初始化到, reset来完成
+			//; 1.如果不是金字塔的最高层，那么就用上层来初始化下一层, 
+			//;   将当前层所有点的逆深度设置为的它们 parent （上一层）的逆深度
 			if (lvl < pyrLevelsUsed - 1)
 				propagateDown(lvl + 1);
 
 			Mat88f H, Hsc;
 			Vec8f b, bsc;
-			resetPoints(lvl); // 这里对顶层进行初始化!
+			//; 2.如果是最高层，那么对最高层进行操作.
+			// 这个函数只调一次，用邻居点抢救下坏点。只抢救最高层的, 其余层只用这个函数的赋值操作
+			resetPoints(lvl); // 这里对顶层进行初始化!  CC：错误！没发现对顶层的操作
+
 			//[ ***step 4*** ] 迭代之前计算能量, Hessian等
+			//! 重要：计算当前层图像的正规方程！
 			Vec3f resOld = calcResAndGS(lvl, H, b, Hsc, bsc, refToNew_current, refToNew_aff_current, false);
 			applyStep(lvl); // 新的能量付给旧的
 
 			float lambda = 0.1;
 			float eps = 1e-4;
 			int fails = 0;
+
 			// 初始信息
 			if (printDebug)
 			{
@@ -159,13 +192,16 @@ namespace dso
 			{
 				//[ ***step 5.1*** ] 计算边缘化后的Hessian矩阵, 以及一些骚操作
 				Mat88f Hl = H;
+				// 对角线元素乘了个值
 				for (int i = 0; i < 8; i++)
 					Hl(i, i) *= (1 + lambda); // 这不是LM么,论文说没用, 嘴硬
-				// 舒尔补, 边缘化掉逆深度状态
+				// 舒尔补, 边缘化掉逆深度状态, 对应高斯牛顿方程消元后左侧δx21的系数
 				Hl -= Hsc * (1 / (1 + lambda)); // 因为dd必定是对角线上的, 所以也乘倒数
+				// 对应方程右的值 二者合起来就是Hl*x21 = bl  x21为未知量
 				Vec8f bl = b - bsc * (1 / (1 + lambda));
 				//? wM为什么这么乘, 它对应着状态的SCALE
 				//? (0.01f/(w[lvl]*h[lvl]))是为了减小数值, 更稳定?
+				// wM是个对角矩阵 对角线原始为 1  1  1  0.5  0.5  0.5  10  1000
 				Hl = wM * Hl * wM * (0.01f / (w[lvl] * h[lvl]));
 				bl = wM * bl * (0.01f / (w[lvl] * h[lvl]));
 
@@ -324,51 +360,69 @@ namespace dso
 			ow->pushDepthImage(&iRImg);
 	}
 
-	//* 计算能量函数和Hessian矩阵, 以及舒尔补, sc代表Schur
+
 	// calculates residual, Hessian and Hessian-block neede for re-substituting depth.
-	Vec3f CoarseInitializer:: calcResAndGS(
+	/**
+	 * @brief 重点：计算能量函数和Hessian矩阵, 以及舒尔补, sc代表Schur
+	 *      注意只是算出了增量方程schur消元系数 还没解增量方程呢.
+
+	 * @param[in] lvl   金字塔层数
+	 * @param[in] H_out   H  b  Hsc  bsc  对应增量方程schur消元后的几个矩阵有了他们就能
+	 * @param[in] b_out    直接计算出增量方程的解了, 解就是位姿增量、仿射系数增量和逆深度增量
+	 * @param[in] H_out_sc 
+	 * @param[in] b_out_sc 
+	 * @param[in] refToNew     新帧到参考帧的位姿变换
+	 * @param[in] refToNew_aff 新帧到参考帧的affine光度仿射变换
+	 * @param[in] plot   没用，估计本来想在里面写画图函数的，结果发现好像也没法画图
+	 * @return Vec3f 
+	 */
+	Vec3f CoarseInitializer::calcResAndGS(
 		int lvl, Mat88f &H_out, Vec8f &b_out,
 		Mat88f &H_out_sc, Vec8f &b_out_sc,
 		const SE3 &refToNew, AffLight refToNew_aff,
 		bool plot)
 	{
-		int wl = w[lvl], hl = h[lvl];
-		// 当前层图像及梯度
-		Eigen::Vector3f *colorRef = firstFrame->dIp[lvl];
-		Eigen::Vector3f *colorNew = newFrame->dIp[lvl];
+		int wl = w[lvl], hl = h[lvl];   // 当前金字塔层图像的宽高
 
-		//! 旋转矩阵R * 内参矩阵K_inv
+		Eigen::Vector3f *colorRef = firstFrame->dIp[lvl];   // 第1帧图像的梯度
+		Eigen::Vector3f *colorNew = newFrame->dIp[lvl];     // 当前帧图像的梯度
+
+		// 旋转矩阵R * 内参矩阵K_inv，方便后面把点从像素平面投到归一化相机平面
 		Mat33f RKi = (refToNew.rotationMatrix() * Ki[lvl]).cast<float>();
-		Vec3f t = refToNew.translation().cast<float>();									  // 平移
+		Vec3f t = refToNew.translation().cast<float>();	  // 平移
 		Eigen::Vector2f r2new_aff = Eigen::Vector2f(exp(refToNew_aff.a), refToNew_aff.b); // 光度参数
 
-		// 该层的相机参数
+		// 该层的相机投影内参
 		float fxl = fx[lvl];
 		float fyl = fy[lvl];
 		float cxl = cx[lvl];
 		float cyl = cy[lvl];
 
-		Accumulator11 E;   // 1*1 的累加器
-		acc9.initialize(); // 初始值, 分配空间
-		E.initialize();
+		Accumulator11 E;   // 1*1 的累加器，用来存储最后总的能量值
+		acc9.initialize(); // 9维向量，相乘得到9x9的hessian矩阵，用来计算H矩阵的位姿和光度部分
+		E.initialize();    // 1*1累加器的初始化
 
+		// 遍历该层金字塔图像的所有特征点	
 		int npts = numPoints[lvl];
 		Pnt *ptsl = points[lvl];
+		// Step 1. 遍历所有点，计算两个重要内容：
+		//;   1.H矩阵中的U和ba(深蓝PPT P29)，并且利用SSE加速pattern中的8个点的计算，结果存储在acc9的9x9矩阵中
+        //;   2.H矩阵中的W，bb，V对应的每个点的雅克比部分（注意不是最后的矩阵），为后面计算acc9SC中的Hsc和bsc做准备
 		for (int i = 0; i < npts; i++)
 		{
-
-			Pnt *point = ptsl + i;
+			Pnt *point = ptsl + i;  // 取出当前特征点
 
 			point->maxstep = 1e10;
+			//; 如果这个点不好，那么就用它上次的能量值累加进去，但是并不计算这个点的雅克比
 			if (!point->isGood) // 点不好
 			{
 				E.updateSingle((float)(point->energy[0])); // 累加
 				point->energy_new = point->energy;
 				point->isGood_new = false;
-				continue;
+				continue;   //; 不考虑这个点，直接遍历下一个点
 			}
-
-			VecNRf dp0; // 8*1矩阵, 每个点附近的残差个数为8个
+			//; 8*1向量, 每个点附近的残差个数为8个, 因为是取一个pattern范围内的8个点
+			VecNRf dp0; 
 			VecNRf dp1;
 			VecNRf dp2;
 			VecNRf dp3;
@@ -378,32 +432,35 @@ namespace dso
 			VecNRf dp7;
 			VecNRf dd;
 			VecNRf r;
-			JbBuffer_new[i].setZero(); // 10*1 向量
+			//; 10*1 向量，存储每个点对应于H矩阵的舒尔消元部分的雅克比
+			JbBuffer_new[i].setZero(); 
 
 			// sum over all residuals.
 			bool isGood = true;
-			float energy = 0;
+			float energy = 0;  // 这个点的pattern内计算的总能量，作为这个点的能量
+			// 遍历当前这个点周围的pattern，一共是8个点
 			for (int idx = 0; idx < patternNum; idx++)
 			{
 				// pattern的坐标偏移
 				int dx = patternP[idx][0];
 				int dy = patternP[idx][1];
 
-				//! Pj' = R*(X/Z, Y/Z, 1) + t/Z, 变换到新的点, 深度仍然使用Host帧的!
+				// Pj' = R*(X/Z, Y/Z, 1) + t/Z, 变换到新的点, 深度仍然使用Host帧的!
+				//; 这里得到的就是j帧相机坐标系下的虚拟点
 				Vec3f pt = RKi * Vec3f(point->u + dx, point->v + dy, 1) + t * point->idepth_new;
-				// 归一化坐标 Pj
+				// 归一化坐标 Pj，也就是在j帧相机坐标系的归一化平面上的点
 				float u = pt[0] / pt[2];
 				float v = pt[1] / pt[2];
-				// 像素坐标pj
+				// 像素坐标pj，j帧相机像素坐标系上的坐标
 				float Ku = fxl * u + cxl;
 				float Kv = fyl * v + cyl;
-				// dpi/pz'
+				// dpi/pz'，对应这个点变换到j帧相机坐标系之后的逆深度
 				float new_idepth = point->idepth_new / pt[2]; // 新一帧上的逆深度
 
-				// 落在边缘附近，深度小于0, 则不好
+				// 落在边缘附近，深度小于0, 说明这个点不好，直接退出此次对这个点的pattern的遍历
 				if (!(Ku > 1 && Kv > 1 && Ku < wl - 2 && Kv < hl - 2 && new_idepth > 0))
 				{
-					isGood = false;
+					isGood = false;  // 这个点不好，直接退出此次对这个点的pattern的遍历
 					break;
 				}
 				// 插值得到新图像中的 patch 像素值，(输入3维，输出3维像素值 + x方向梯度 + y方向梯度)
@@ -415,53 +472,60 @@ namespace dso
 				float rlR = getInterpolatedElement31(colorRef, point->u + dx, point->v + dy, wl);
 
 				// 像素值有穷, good
+				//! 疑问：像素值怎么可能是无穷的呢？
 				if (!std::isfinite(rlR) || !std::isfinite((float)hitColor[0]))
 				{
-					isGood = false;
+					isGood = false;   // 这个点不好，直接退出此次对这个点的pattern的遍历
 					break;
 				}
 
-				// 残差
+				// 残差, 对应公式 I_j - e^a_ji * I_i - b_ji
 				float residual = hitColor[0] - r2new_aff[0] * rlR - r2new_aff[1];
-				// Huber权重
+				// Huber权重: e < 阈值k，则权重为1； >阈值k则权重为k/|e|。配置文件中设置为k=9
+				// 论文公式4   huber范数用来降低高梯度点的权重？？感觉不是这样吧？huber和高梯度权重是俩东西
+			    // https://blog.csdn.net/xxxlinttp/article/details/89379785 博客写的很清晰 对应公式9 只不过乘
+			    // 了个2倍  无所谓 都乘约掉了
 				float hw = fabs(residual) < setting_huberTH ? 1 : setting_huberTH / fabs(residual);
 				// huberweight * (2-huberweight) = Objective Function
 				// robust 权重和函数之间的关系
 				energy += hw * residual * residual * (2 - hw);
 
-				// Pj 对 逆深度 di 求导
-				//! 1/Pz * (tx - u*tz), u = px/pz
+				//; Pj 对 逆深度 di 求导的中间变量(注意这里只是一个中间变量，并不是最终的逆深度求导结果)
+				// 1/Pz * (tx - u*tz), u = px'/pz'
 				float dxdd = (t[0] - t[2] * u) / pt[2];
-				//! 1/Pz * (ty - v*tz), u = py/pz
+				// 1/Pz * (ty - v*tz), v = py'/pz'
 				float dydd = (t[1] - t[2] * v) / pt[2];
 
+				//; huber核函数的权重
 				if (hw < 1)
 					hw = sqrtf(hw); //?? 为啥开根号, 答: 鲁棒核函数等价于加权最小二乘
-				//! dxfx, dyfy
+				// dxfx, dyfy
 				float dxInterp = hw * hitColor[1] * fxl;
 				float dyInterp = hw * hitColor[2] * fyl;
-				//* 残差对 j(新状态) 位姿求导,
-				dp0[idx] = new_idepth * dxInterp;						//! dpi/pz' * dxfx
-				dp1[idx] = new_idepth * dyInterp;						//! dpi/pz' * dyfy
-				dp2[idx] = -new_idepth * (u * dxInterp + v * dyInterp); //! -dpi/pz' * (px'/pz'*dxfx + py'/pz'*dyfy)
-				dp3[idx] = -u * v * dxInterp - (1 + v * v) * dyInterp;	//! - px'py'/pz'^2*dxfy - (1+py'^2/pz'^2)*dyfy
-				dp4[idx] = (1 + u * u) * dxInterp + u * v * dyInterp;	//! (1+px'^2/pz'^2)*dxfx + px'py'/pz'^2*dxfy
-				dp5[idx] = -v * dxInterp + u * dyInterp;				//! -py'/pz'*dxfx + px'/pz'*dyfy
+				//* 残差对 j(新状态) 位姿求导, 前三个是平移，后三个是旋转
+				dp0[idx] = new_idepth * dxInterp;						// dpi/pz' * dxfx
+				dp1[idx] = new_idepth * dyInterp;						// dpi/pz' * dyfy
+				dp2[idx] = -new_idepth * (u * dxInterp + v * dyInterp); // -dpi/pz' * (px'/pz'*dxfx + py'/pz'*dyfy)
+				dp3[idx] = -u * v * dxInterp - (1 + v * v) * dyInterp;	// - px'py'/pz'^2*dxfy - (1+py'^2/pz'^2)*dyfy
+				dp4[idx] = (1 + u * u) * dxInterp + u * v * dyInterp;	// (1+px'^2/pz'^2)*dxfx + px'py'/pz'^2*dxfy
+				dp5[idx] = -v * dxInterp + u * dyInterp;				// -py'/pz'*dxfx + px'/pz'*dyfy
 				//* 残差对光度参数求导
-				dp6[idx] = -hw * r2new_aff[0] * rlR; //! exp(aj-ai)*I(pi)
-				dp7[idx] = -hw * 1;					 //! 对 b 导
+				dp6[idx] = -hw * r2new_aff[0] * rlR; // exp(aj-ai)*I(pi)
+				dp7[idx] = -hw * 1;					 // 对 b 导
 				//* 残差对 i(旧状态) 逆深度求导
-				dd[idx] = dxInterp * dxdd + dyInterp * dydd; //! dxfx * 1/Pz * (tx - u*tz) +　dyfy * 1/Pz * (tx - u*tz)
-				r[idx] = hw * residual;						 //! 残差 res
+				dd[idx] = dxInterp * dxdd + dyInterp * dydd; // dxfx * 1/Pz * (tx - u*tz) +　dyfy * 1/Pz * (tx - u*tz)
+				r[idx] = hw * residual;						 // 残差 res
 
 				//* 像素误差对逆深度的导数，取模倒数
+				//! 疑问：这是啥玩意?
 				float maxstep = 1.0f / Vec2f(dxdd * fxl, dydd * fyl).norm(); //? 为什么这么设置
 				if (maxstep < point->maxstep)
 					point->maxstep = maxstep;
 
 				// immediately compute dp*dd' and dd*dd' in JbBuffer1.
-				//* 计算Hessian的第一行(列), 及Jr 关于逆深度那一行
-				// 用来计算舒尔补
+				//; 注意这里就是在算H矩阵的舒尔消元部分的雅克比，并不是H矩阵。这里的相加是因为现在在遍历第i个点的pattern，
+				//; 一个点的pattern范围内一共是8个点，所以相加。这里的索引i就是当前金字塔层上的所有点。
+				// 1.深蓝学院PPT P31，H矩阵中的W部分，其中的J0——J7，注意仍然是雅克比，不是最后的H矩阵结果
 				JbBuffer_new[i][0] += dp0[idx] * dd[idx];
 				JbBuffer_new[i][1] += dp1[idx] * dd[idx];
 				JbBuffer_new[i][2] += dp2[idx] * dd[idx];
@@ -470,28 +534,40 @@ namespace dso
 				JbBuffer_new[i][5] += dp5[idx] * dd[idx];
 				JbBuffer_new[i][6] += dp6[idx] * dd[idx];
 				JbBuffer_new[i][7] += dp7[idx] * dd[idx];
+				// 2.深蓝学院PPT P31，H矩阵中的b_B部分，其中的J8，注意仍然是雅克比，不是最后的H矩阵结果
 				JbBuffer_new[i][8] += r[idx] * dd[idx];
+				// 3.深蓝学院PPT P31，H矩阵中的V部分，其中的w，注意仍然是雅克比，不是最后的H矩阵结果
 				JbBuffer_new[i][9] += dd[idx] * dd[idx];
-			}
+			}  // 结束八个点的累计了
 
+			// energy是 8个点的残差值和异常点或者越界或者能量异常
 			// 如果点的pattern(其中一个像素)超出图像,像素值无穷, 或者残差大于阈值
 			if (!isGood || energy > point->outlierTH * 20)
 			{
+				//对应论文Outlier and Occlusion Detection 这节描述内容剔除异常点
 				E.updateSingle((float)(point->energy[0])); // 上一帧的加进来
-				point->isGood_new = false;
+				point->isGood_new = false;   // 异常点会将isGood_new的值修改一次设置为false
 				point->energy_new = point->energy; //上一次的给当前次的
 				continue;
 			}
 
 			// 内点则加进能量函数
 			// add into energy.
-			E.updateSingle(energy);
+			// SSEData[0] 累加式赋值
+			E.updateSingle(energy);   //; E 是一个1x1的累加器，这里存储总的能量
 			point->isGood_new = true;
 			point->energy_new[0] = energy;
 
-			//! 因为使用128位相当于每次加4个数, 因此i+=4, 妙啊!
-			// update Hessian matrix.
+			//! 因为使用128位相当于每次加4个数（一个float 32位，4个float正好128位）, 因此i+=4, 妙啊!
+			// update Hessian matrix.  更新hessian矩阵
+			//; 注意patternNum=8，i = 0/4正好索引两次，把pattern中8个点每次算4个点，算2次
 			for (int i = 0; i + 3 < patternNum; i += 4)
+			{
+				//; 这里简单理解SSE加速：dp0-7和r都是8维向量，每个维度都对应pattern中的一个点，这些变量中的每个维度组合起来
+				//; 得到一个9x1的向量（因为这里有9个变量），然后因为这些向量都是8维的（对应pattern中8个点），所以最后相当
+				//; 于我有8个9x1的向量，要计算9x1乘以1x9向量得到的9x9矩阵，得到的8个9x9矩阵再相加（为什么相加？因为当前点
+				//; 要算他周围pattern的8个点的和作为当前点的结果）。这里SSE加速就是每次我都可以算4个9x9矩阵的结果，也就是
+				//; 每次算pattern中的4个点，这样pattern中的8个点我只需要计算2次即可，而不需要计算8次。
 				acc9.updateSSE(
 					_mm_load_ps(((float *)(&dp0)) + i),
 					_mm_load_ps(((float *)(&dp1)) + i),
@@ -502,30 +578,40 @@ namespace dso
 					_mm_load_ps(((float *)(&dp6)) + i),
 					_mm_load_ps(((float *)(&dp7)) + i),
 					_mm_load_ps(((float *)(&r)) + i));
-
+			}
 			// 加0, 4, 8后面多余的值, 因为SSE2是以128为单位相加, 多余的单独加
+			// 不是四倍数会最后再来一次 就是要加速计算
+			//; 对于DSO正常操作来说，这里并不会执行了，因为DSO用的pattern上面2次就能算完了
 			for (int i = ((patternNum >> 2) << 2); i < patternNum; i++)
+			{
 				acc9.updateSingle(
 					(float)dp0[i], (float)dp1[i], (float)dp2[i], (float)dp3[i],
 					(float)dp4[i], (float)dp5[i], (float)dp6[i], (float)dp7[i],
 					(float)r[i]);
-		}
+			}
+		} // 点循环结束.
 
-		E.finish();
-		acc9.finish();
+		// E中存总残差值算的是E中A值
+		E.finish();  //; 这里调用finish，应该就是把存在SSE中的结果处理一下，存到E.A中，也就是最后输出的结果
+		acc9.finish();  //; 这里简单理解就是把上面SSE计算的存储在特定数组中的中间结果，更新到最后我们要的9x9的H矩阵中
 
-		//????? 这是在干吗???
-
-		// calculate alpha energy, and decide if we cap it.
+	
+		// Step 2 计算附加的alpha能量，不太懂具体原理，但是基本和PPT能对应上
+		// calculate alpha energy, and decide if we cap it.	
+		// 计算α能量，并决定是否限制它。
 		Accumulator11 EAlpha;
 		EAlpha.initialize();
+		// 一顿计算E的点是为了干啥呢，这段代码完全无用啊笔误还是什么呢
+		//; CC: 这段代码应该没啥问题吧，就是在计算逆深度需要是1的正则化项
 		for (int i = 0; i < npts; i++)
 		{
 			Pnt *point = ptsl + i;
+			//; 如果是坏点，那么正则化项就用之前算出来的正则化项
 			if (!point->isGood_new) // 点不好用之前的
 			{
-				E.updateSingle((float)(point->energy[1])); //! 又是故意这样写的，没用的代码
+				E.updateSingle((float)(point->energy[1])); //! 又是故意这样写的，没用的代码？？ CC：这个有用啊，没啥毛病吧
 			}
+			//; 如果是好点，那么就添加逆深度均值为1的正则化项
 			else
 			{
 				// 最开始初始化都是成1
@@ -533,23 +619,32 @@ namespace dso
 				E.updateSingle((float)(point->energy_new[1]));
 			}
 		}
-		EAlpha.finish();																	   //! 只是计算位移是否足够大
+		// 最终结果是算一个EAlpha的A值。但是EAlpha只定义了下初始化了一下
+		// 没有运算过程，所以A只恒为0
+		EAlpha.finish();	 //! 只是计算位移是否足够大
+		//squaredNorm 二范数的平方		
+		//! 疑问：这里对逆深度均值为1的限制到底用没用？没用的话上面对E又计算了。所以最后结果就是它用在了E中，但是
+		//!  没有乘以前面了alphaW，也没有参与后面的hessain矩阵计算（即没有对变量变化提供帮助？）
 		float alphaEnergy = alphaW * (EAlpha.A + refToNew.translation().squaredNorm() * npts); // 平移越大, 越容易初始化成功?
 
 		//printf("AE = %f * %f + %f\n", alphaW, EAlpha.A, refToNew.translation().squaredNorm() * npts);
 
-		// compute alpha opt.
-		float alphaOpt;
+		//! 疑问：下面这个操作实在没看懂，不知道它怎么操作的
+		// compute alpha opt.计算alpha选择。
+		float alphaOpt;  //; 这是对后面逆深度的梯度的放大系数
+		// 150 * 150 * 平移分量的二范数平方×点总数 > 2.5 * 2.5 ×点总数
+		// 等价于150 * 平移分量的二范数> 2.5 ( 因为EAlpha.A恒为0)
 		if (alphaEnergy > alphaK * npts) // 平移大于一定值
 		{
-			alphaOpt = 0;
-			alphaEnergy = alphaK * npts;
+			alphaOpt = 0;   //; 这里对逆深度的矩阵为1的限制就没有了
+			alphaEnergy = alphaK * npts;  //; 限制alpha能量为2.5*总点数
 		}
 		else
 		{
-			alphaOpt = alphaW;
+			alphaOpt = alphaW;  // 150*150
 		}
 
+		// Step 3 计算acc9SC，即H矩阵中舒尔消元的部分
 		acc9SC.initialize();
 		for (int i = 0; i < npts; i++)
 		{
@@ -559,46 +654,83 @@ namespace dso
 
 			point->lastHessian_new = JbBuffer_new[i][9]; // 对逆深度 dd*dd
 
+			// Step 3.1. 添加附加能量函数的雅克比部分
 			//? 这又是啥??? 对逆深度的值进行加权? 深度值归一化?
 			// 前面Energe加上了（d-1)*(d-1), 所以dd = 1， r += (d-1)
+			// 看了个博客，说这个叫正则项为了加速优化过程，使其快速收敛
+			// 博客地址: https://blog.csdn.net/wubaobao1993/article/details/103871697 
+			// 说是下面这个是应对小位移的正则项 
+			//! 注意这里为什么只有8和9的位置加了对逆深度均值为1的能量的雅克比？
+			//; 因为8对应的是残差部分，对于一个能量函数来说（注意不是残差函数），其对应到正规方程里面，能量函数的一阶导
+			//; 就是残差部分，而能量函数的二阶导就是完整的hessian矩阵（注意不是近似的hessian，但是由于我们大部分都是
+			//; 用近似的hessian，所以这里附加部分用2完整的hessian也无所谓）
+			// Step 3.1.1. 如果是位移较小的附加能量函数
 			JbBuffer_new[i][8] += alphaOpt * (point->idepth_new - 1); // r*dd
 			JbBuffer_new[i][9] += alphaOpt;							  // 对逆深度导数为1 // dd*dd
-
+			
+			// Step 3.1.2. 如果是位移较大的附加能量函数
+			//; 如果满足这个，说明平移足够大了，那么附加的能量函数就切换成第2个，也就是对点的深度期望值的能量函数
 			if (alphaOpt == 0)
 			{
+				// 说是下面这个是应对大位移的正则项       
+		   		// 此时的idepth_new是点的上一次优化更新的结果
 				JbBuffer_new[i][8] += couplingWeight * (point->idepth_new - point->iR);
 				JbBuffer_new[i][9] += couplingWeight;
 			}
-
+			
+			//; 注意：上面算的一直都是舒尔矩阵中的V部分，知道这里才对它求逆，变成V^-1，也就是最后的权重
+			// 博客中的公式的分母多了个1  防止JbBuffer_new[i][9]过小造成系统不稳定吧
 			JbBuffer_new[i][9] = 1 / (1 + JbBuffer_new[i][9]); // 取逆是协方差，做权重
-			//* 9做权重, 计算的是舒尔补项!
-			//! dp*dd*(dd^2)^-1*dd*dp
+		
+			//; 注意这里就是简单的计算，并没有SSE加速的内容。
+			//;  这里就计算完成了每一个点对H矩阵中舒尔消元部分的内容，每次计算都会累加每个点的计算结果，因为N个点
+			//;  组成的N个残差，最后矩阵相乘之后和1个点组成的一个矩阵，然后一共N个矩阵相加结果是一样的（其实就是
+			//;  矩阵乘法按照左边一列乘以右边一行得到一个矩阵，然后所有矩阵相加得到最后的矩阵乘法结果）
 			acc9SC.updateSingleWeighted(
 				(float)JbBuffer_new[i][0], (float)JbBuffer_new[i][1], (float)JbBuffer_new[i][2], (float)JbBuffer_new[i][3],
 				(float)JbBuffer_new[i][4], (float)JbBuffer_new[i][5], (float)JbBuffer_new[i][6], (float)JbBuffer_new[i][7],
 				(float)JbBuffer_new[i][8], (float)JbBuffer_new[i][9]);
 		}
-		acc9SC.finish();
+		acc9SC.finish();  //; finish里面就是根据矩阵的对称性，把对角线之下的元素补充上
 
+		// Step 4 计算完毕，把舒尔消元的结果从SSE计算的内存中取出来
 		//printf("nelements in H: %d, in E: %d, in Hsc: %d / 9!\n", (int)acc9.num, (int)E.num, (int)acc9SC.num*9);
-		H_out = acc9.H.topLeftCorner<8, 8>();		// / acc9.num;  		!dp^T*dp
-		b_out = acc9.H.topRightCorner<8, 1>();		// / acc9.num; 		!dp^T*r
-		H_out_sc = acc9SC.H.topLeftCorner<8, 8>();	// / acc9.num; 	!(dp*dd)^T*(dd*dd)^-1*(dd*dp)
-		b_out_sc = acc9SC.H.topRightCorner<8, 1>(); // / acc9.num;	!(dp*dd)^T*(dd*dd)^-1*(dp^T*r)
+		// 对应舒尔消元矩阵的Hx21x21, Hx21x21  
+		//! 下面的变量对比深蓝学院PPT的P29 
+		//; H_out = U（位姿和广度的H矩阵部分，8x8）
+		H_out = acc9.H.topLeftCorner<8, 8>();		// / acc9.num;  dp^T*dp
+		// 对应舒尔消元矩阵的Jx21转置* r21,  (Jx21).t*r21
+		//; b_out = b_A(位姿和广度的b部分，8x1)
+		b_out = acc9.H.topRightCorner<8, 1>();		// / acc9.num;  dp^T*r
+		// 对应舒尔消元矩阵的(Hρx21).t *  (Hρρ).-1 * (Hρx21)
+		//; H_out_sc = W * V^-1 * W^T, 即把逆深度舒尔消元后得到的关于位姿和广度的H矩阵部分，8x8
+		H_out_sc = acc9SC.H.topLeftCorner<8, 8>();	// / acc9.num; 	(dp*dd)^T*(dd*dd)^-1*(dd*dp)
+		// 对应舒尔消元矩阵的(Hρx21).t *  (Hρρ).-1 * (Jρ).t * r21
+		//; b_out_sc = W * V^-1 * b_B，即把逆深度舒尔消元后得到的关于位姿和广度的b部分，8x1
+		b_out_sc = acc9SC.H.topRightCorner<8, 1>(); // / acc9.num;	(dp*dd)^T*(dd*dd)^-1*(dp^T*r)
 
-		//??? 啥意思
+		// Step 5 最后对平移的附加能量函数部分，对位姿和广度部分还要加上H和b的部分
+		//! 真的是严谨啊！这个作者属实有点东西！
+		//; 首先明确，在计算能量函数的时候，最后附加了两种能量函数：位移较小和位移较大（见深蓝PPT P28），其中两种附加能量函数都和
+		//; 逆深度有关，而位移较小的能量函数还和位姿的平移部分有关。但是代码中添加这部分能量函数并且求雅克比的地方，是在计算完了
+		//; 位姿和广度的H矩阵acc9之后，然后对附加能量函数的雅克比部分只在处理逆深度的舒尔补的时候添加了。所以如果是位移较小的附加
+		//; 能量函数，显然和位移有关，对位姿部分的H矩阵也是有H和B的贡献的，但是上面的代码中我们并没有添加，因此这里要再添加上
 		// t*t*ntps
 		// 给 t 对应的Hessian, 对角线加上一个数, b也加上
+		// 将位移较小情况的正则项加入
+		//; H 矩阵直接是二阶导数，t被求导求掉了，变成单位矩阵
 		H_out(0, 0) += alphaOpt * npts;
 		H_out(1, 1) += alphaOpt * npts;
 		H_out(2, 2) += alphaOpt * npts;
 
+		//; 而B部分是一阶导数，其中含有t
 		Vec3f tlog = refToNew.log().head<3>().cast<float>(); // 李代数, 平移部分 (上一次的位姿值)
 		b_out[0] += tlog[0] * alphaOpt * npts;
 		b_out[1] += tlog[1] * alphaOpt * npts;
 		b_out[2] += tlog[2] * alphaOpt * npts;
 
 		// 能量值, ? , 使用的点的个数
+		// 总残差值，平移二范数，总点数
 		return Vec3f(E.A, alphaEnergy, E.num);
 	}
 
@@ -857,11 +989,11 @@ namespace dso
 						pl[nl].u = x + 0.1; //? 加0.1干啥
 						pl[nl].v = y + 0.1;
 						//! 重要：把点的初始深度都设置成1
-						pl[nl].idepth = 1;
-						pl[nl].iR = 1;
-						pl[nl].isGood = true;
+						pl[nl].idepth = 1; 
+						pl[nl].iR = 1;   //; 所有点逆深度的期望值设置为1
+						pl[nl].isGood = true;   //; 注意这里，每个点都被标记为good点
 						pl[nl].energy.setZero();
-						pl[nl].lastHessian = 0;
+						pl[nl].lastHessian = 0;   //; 点的逆深度的协方差的逆，在使用高斯分布归一化积融合深度的时候用到
 						pl[nl].lastHessian_new = 0;
 						pl[nl].my_type = (lvl != 0) ? 1 : statusMap[x + y * wl];
 
@@ -898,15 +1030,20 @@ namespace dso
 
 		// 设置一些变量的值，thisToNext表示当前帧到下一帧的位姿变换，
 		// snapped frameID snappedAt这三个变量在后续判断是否跟踪了足够多的图像帧能够初始化时用到。
+		//; 初始化的旋转是单位阵 初始化的 平移是0 0 0 
 		thisToNext = SE3();   // 当前帧到下一阵的位姿变换
 		snapped = false;   //; 初始化的时候位移是否足够大了
-		frameID = snappedAt = 0;
+		frameID = snappedAt = 0;  //; 注意这里更新了frameID=0，这样setFrist函数只会进入一次
 
 		for (int i = 0; i < pyrLevelsUsed; i++)
 			dGrads[i].setZero();  //; 这个变量好像没用到？
 	}
 
-	//@ 重置点的energy, idepth_new参数
+	/**
+	 * @brief 重置点的energy, idepth_new参数
+	 * 
+	 * @param[in] lvl  传入的金字塔层数
+	 */
 	void CoarseInitializer::resetPoints(int lvl)
 	{
 		Pnt *pts = points[lvl];
@@ -914,10 +1051,12 @@ namespace dso
 		for (int i = 0; i < npts; i++)
 		{
 			// 重置
-			pts[i].energy.setZero();
+			pts[i].energy.setZero();  //; 实际在第1帧初始化的时候这里能量就设置成0了
 			pts[i].idepth_new = pts[i].idepth;
 
 			// 如果是最顶层, 则使用周围点平均值来重置
+			//! 错误：这里第1帧的点都被设置成好点了，所以第2帧图像来的时候并不会执行这个
+			//; 如果是金字塔最高层并且点为非good点 用邻居对其抢救一次
 			if (lvl == pyrLevelsUsed - 1 && !pts[i].isGood)
 			{
 				float snd = 0, sn = 0;
@@ -950,11 +1089,13 @@ namespace dso
 		{
 			if (!pts[i].isGood)
 				continue;
-
+			// JbBuffer[i][8] 是  (Jρ).t * r21
+			// JbBuffer[i].head<8>().dot(inc)对应Hρx21*δx21
 			//! dd*r + (dp*dd)^T*delta_p
 			float b = JbBuffer[i][8] + JbBuffer[i].head<8>().dot(inc);
 			//! dd * delta_d = dd*r - (dp*dd)^T*delta_p = b
 			//! delta_d = b * dd^-1
+			// 这个是逆深度的增量值	  
 			float step = -b * JbBuffer[i][9] / (1 + lambda);
 
 			float maxstep = maxPixelStep * pts[i].maxstep; // 逆深度最大只能增加这些
@@ -967,11 +1108,13 @@ namespace dso
 				step = -maxstep;
 
 			// 更新得到新的逆深度
+			// 这个是此点最终的新逆深度值
 			float newIdepth = pts[i].idepth + step;
 			if (newIdepth < 1e-3)
 				newIdepth = 1e-3;
 			if (newIdepth > 50)
 				newIdepth = 50;
+			// 点的最新逆深度值
 			pts[i].idepth_new = newIdepth;
 		}
 	}

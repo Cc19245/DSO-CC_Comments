@@ -56,7 +56,26 @@ namespace dso
 	//@ 将host帧投影到新的帧, 且可以设置像素偏移dxdy, 得到:
 	//@ 参数: [drescale 新比旧逆深度] [uv 新的归一化平面]
 	//@		[kukv 新的像素平面] [KliP 旧归一化平面] [new_idepth 新的逆深度]
-
+	/**
+	 * @brief  参考博客：epsilonjohn.club/2020/03/16/SLAM代码课程/DSO/DSO-1-系统框架与初始化/
+	 * 
+	 * @param[in] u_pt 
+	 * @param[in] v_pt 
+	 * @param[in] idepth   i帧下的逆深度
+	 * @param[in] dx 
+	 * @param[in] dy 
+	 * @param[in] HCalib 
+	 * @param[in] R 
+	 * @param[in] t 
+	 * @param[in] drescale 
+	 * @param[in] u 
+	 * @param[in] v 
+	 * @param[in] Ku 
+	 * @param[in] Kv 
+	 * @param[in] KliP 
+	 * @param[in] new_idepth 
+	 * @return EIGEN_STRONG_INLINE 
+	 */
 	EIGEN_STRONG_INLINE bool projectPoint(
 		const float &u_pt, const float &v_pt,
 		const float &idepth,
@@ -72,14 +91,20 @@ namespace dso
 			(v_pt + dy - HCalib->cyl()) * HCalib->fyli(),
 			1);
 
-		Vec3f ptp = R * KliP + t * idepth;
+		//; 这里其实没有什么复杂的，就是正常来说RP+t算坐标变换时，P点应该用i帧相机坐标系下的正常表示的点，而不是i帧相机归一化
+		//; 平面上的点，即应该是R*(KliP/idepth)+t, 其中idepth是i帧下的逆深度，这样得到的就是j帧相机坐标系下的正常点。但是
+		//; 这里又处理了一步，把上面的结果再乘以idepth，就相当于把j帧坐标系下的正常点坐标又做了一个缩放，即又除以了i帧坐标下
+		//; 的深度（注意不是j帧坐标下的深度，因此此时得到的ptp并不是j帧归一化平面上的点）。其实此时要把ptp点投影到j帧像素坐标
+		//; 很简单，直接除以它的第3维度的坐标把他转到j帧相机归一化平面上即可（也就是求的drescale，注意这并不是j帧下的逆深度），
+		//; 这个和j帧相机坐标系下的正常点的处理没有什么区别
+		Vec3f ptp = R * KliP + t * idepth;   // 这就是虚拟点P_j^{virtual}，也就是j帧相机坐标系下的坐标在乘以i帧下的逆深度
 		drescale = 1.0f / ptp[2];		// target帧逆深度 比 host帧逆深度
 		new_idepth = idepth * drescale; // 新的帧上逆深度
 
 		if (!(drescale > 0))
 			return false;
 
-		// 归一化平面
+		// 归一化平面，将虚拟点P_j^{virtual}转到归一化平面上
 		u = ptp[0] * drescale;
 		v = ptp[1] * drescale;
 		// 像素平面

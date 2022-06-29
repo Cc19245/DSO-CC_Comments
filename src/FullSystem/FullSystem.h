@@ -155,7 +155,7 @@ namespace dso
 		void printFrameLifetimes();
 		// contains pointers to active frames
 
-		std::vector<IOWrap::Output3DWrapper *> outputWrapper;
+		std::vector<IOWrap::Output3DWrapper *> outputWrapper;  // 显示
 
 		bool isLost;      //; 是否已经跟踪丢失了，如果跟丢了系统整个结束
 		bool initFailed;  //; 是否跟踪失败了，如果跟踪失败还可以抢救一下

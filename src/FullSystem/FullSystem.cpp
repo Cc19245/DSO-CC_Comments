@@ -831,7 +831,7 @@ namespace dso
 		//; allFrameHistory是历史上的所有帧的轨迹，也就是这次数据集跑完之后的结果
 		allFrameHistory.push_back(shell); // 只把简略的shell存起来
 
-		// Step 3 得到曝光时间, 生成金字塔, 计算整个图像梯度
+		// Step 3 得到曝光时间, 生成金字塔, 计算金字塔各层图像的梯度
 		// =========================== make Images / derivatives etc. =========================
 		fh->ab_exposure = image->exposure_time;  //; ms单位的图像曝光时间
 		// 计算当前图像帧各层金字塔的像素灰度值及梯度
@@ -841,11 +841,13 @@ namespace dso
 		if (!initialized)
 		{
 			// use initializer!
-			// Step 4.1 加入第一帧
+			// Step 4.1 加入第一帧：主要是建立图像金字塔，为每一层金字塔提取特征点，并寻找最近邻点和父点
 			if (coarseInitializer->frameID < 0) // first frame set. fh is kept by coarseInitializer.
 			{
 				coarseInitializer->setFirst(&Hcalib, fh);
+				//! 至此，整个系统传入的第1帧图像处理结束，等待传入下一帧图像
 			}
+			//! 整个系统第2帧图像进入，用第2帧图像对系统的第1帧图像进行跟踪
 			else if (coarseInitializer->trackFrame(fh, outputWrapper)) // if SNAPPED
 			{
 				// Step 4.2 跟踪成功, 完成初始化
@@ -887,7 +889,7 @@ namespace dso
 			if (setting_keyframesPerSecond > 0) // 每隔多久插入关键帧
 			{
 				needToMakeKF = allFrameHistory.size() == 1 ||
-							   (fh->shell->timestamp - allKeyFramesHistory.back()->timestamp) > 0.95f / setting_keyframesPerSecond;
+					(fh->shell->timestamp - allKeyFramesHistory.back()->timestamp) > 0.95f / setting_keyframesPerSecond;
 			}
 			else
 			{
@@ -896,12 +898,12 @@ namespace dso
 
 				// BRIGHTNESS CHECK
 				needToMakeKF = allFrameHistory.size() == 1 ||
-							   setting_kfGlobalWeight * setting_maxShiftWeightT * sqrtf((double)tres[1]) / (wG[0] + hG[0]) +		  // 平移像素位移
-									   setting_kfGlobalWeight * setting_maxShiftWeightR * sqrtf((double)tres[2]) / (wG[0] + hG[0]) +  //TODO 旋转像素位移, 设置为0???
-									   setting_kfGlobalWeight * setting_maxShiftWeightRT * sqrtf((double)tres[3]) / (wG[0] + hG[0]) + // 旋转+平移像素位移
-									   setting_kfGlobalWeight * setting_maxAffineWeight * fabs(logf((float)refToFh[0])) >
-								   1 ||										 // 光度变化大
-							   2 * coarseTracker->firstCoarseRMSE < tres[0]; // 误差能量变化太大(最初的两倍)
+					setting_kfGlobalWeight * setting_maxShiftWeightT * sqrtf((double)tres[1]) / (wG[0] + hG[0]) +		  // 平移像素位移
+					setting_kfGlobalWeight * setting_maxShiftWeightR * sqrtf((double)tres[2]) / (wG[0] + hG[0]) +  //TODO 旋转像素位移, 设置为0???
+					setting_kfGlobalWeight * setting_maxShiftWeightRT * sqrtf((double)tres[3]) / (wG[0] + hG[0]) + // 旋转+平移像素位移
+					setting_kfGlobalWeight * setting_maxAffineWeight * fabs(logf((float)refToFh[0])) >
+					1 ||										 // 光度变化大
+					2 * coarseTracker->firstCoarseRMSE < tres[0]; // 误差能量变化太大(最初的两倍)
 			}
 
 			for (IOWrap::Output3DWrapper *ow : outputWrapper)
