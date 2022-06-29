@@ -816,19 +816,19 @@ namespace dso
 		// 进行像素点选取的相关类的初始实例化以及变量的初始定义
 		PixelSelector sel(w[0], h[0]); // 像素选择
 		//; 这两个变量中对应位置的值表示该位置的像素点是否被选取
-		float *statusMap = new float[w[0] * h[0]];
+		float *statusMap = new float[w[0] * h[0]];   //; 第0层的像素点对应在哪一层的梯度上被提取出来作为特征点，感觉用int更好啊？
 		bool *statusMapB = new bool[w[0] * h[0]];
 		//; 金字塔越往上像素点越少，所以点占的比例越多
 		float densities[] = {0.03, 0.05, 0.15, 0.5, 1}; // 不同层取的点密度，越往上取的点密度越大
-		// 遍历所有金字塔
+		// Step 2 遍历图像金字塔，在不同层选择特征点，并且为选择出来的特征点构造Pnt点类
 		for (int lvl = 0; lvl < pyrLevelsUsed; lvl++)
 		{
-			// Step 2 针对不同层数选择大梯度像素, 第0层比较复杂1d, 2d, 4d大小block来选择3个层次的像素
+			// Step 2.1 针对不同层数选择大梯度像素, 第0层比较复杂1d, 2d, 4d大小block来选择3个层次阈值的像素
 			sel.currentPotential = 3; // 设置网格大小，3*3大小格
 			int npts;		// 选出的点的数量
 			if (lvl == 0)	// 第0层（原始图像）提取特征像素
 				npts = sel.makeMaps(firstFrame, statusMap, densities[lvl] * w[0] * h[0], 1, false, 2);
-			else // 其它层则选出goodpoints
+			else // 其它层则选出goodpoints,很简单，就是在pot内梯度模长满足阈值，并且dx dy dx-dy dx+dy是最大值的那个点
 				npts = makePixelStatus(firstFrame->dIp[lvl], statusMapB, 
 					w[lvl], h[lvl], densities[lvl] * w[0] * h[0]);
 
@@ -841,9 +841,10 @@ namespace dso
 			int wl = w[lvl], hl = h[lvl]; // 每一层的图像大小
 			Pnt *pl = points[lvl];		  // 每一层上的点
 			int nl = 0;
-			// 要留出pattern的空间, 2 border
-			// Step 3 在选出的像素中, 添加点信息
+			// 要留出pattern的空间, 2 border. patternPadding是配置文件参数，默认2
+			// Step 2.2 在选出的像素中, 添加点信息
 			for (int y = patternPadding + 1; y < hl - patternPadding - 2; y++)
+			{
 				for (int x = patternPadding + 1; x < wl - patternPadding - 2; x++)
 				{
 					//if(x==2) printf("y=%d!\n",y);
@@ -851,9 +852,11 @@ namespace dso
 					if ((lvl != 0 && statusMapB[x + y * wl]) || (lvl == 0 && statusMap[x + y * wl] != 0))
 					{
 						//assert(patternNum==9);
-						//; 选取的像素点相关值的初始化，nl为像素点的ID
+						// 选取的像素点相关值的初始化，nl为像素点的ID
+						//; 注意：这里给点的坐标值是在它对应的那层金字塔上的像素坐标值
 						pl[nl].u = x + 0.1; //? 加0.1干啥
 						pl[nl].v = y + 0.1;
+						//! 重要：把点的初始深度都设置成1
 						pl[nl].idepth = 1;
 						pl[nl].iR = 1;
 						pl[nl].isGood = true;
@@ -864,42 +867,43 @@ namespace dso
 
 						Eigen::Vector3f *cpt = firstFrame->dIp[lvl] + x + y * w[lvl]; // 该像素梯度
 						float sumGrad2 = 0;
-						// 计算pattern内像素梯度和
+						// 计算pattern内像素梯度和， patternNum=8，配置文件中的参数
 						for (int idx = 0; idx < patternNum; idx++)
 						{
-							int dx = patternP[idx][0]; // pattern 的偏移
+							int dx = patternP[idx][0]; // pattern 的坐标偏移，分别是xy坐标的偏移
 							int dy = patternP[idx][1];
 							float absgrad = cpt[dx + dy * w[lvl]].tail<2>().squaredNorm();
 							sumGrad2 += absgrad;
 						}
-
+						//; 这里被作者注释掉了，也就是算了半天pattern内的像素梯度和，结果最后没使用？
 						// float gth = setting_outlierTH * (sqrtf(sumGrad2)+setting_outlierTHSumComponent);
 						// pl[nl].outlierTH = patternNum*gth*gth;
 						//! 外点的阈值与pattern的大小有关, 一个像素是12*12
 						//? 这个阈值怎么确定的...
+						//; 这里外点的阈值就是一个确定的值？8*12*12
 						pl[nl].outlierTH = patternNum * setting_outlierTH;
 
 						nl++;
 						assert(nl <= npts);
 					}
 				}
-
-			numPoints[lvl] = nl; // 点的数目,  去掉了一些边界上的点
+			}
+			numPoints[lvl] = nl; // 点的数目,  去掉了一些边界上的点(因为上面需要计算一共8个点的pattern,所以边上要留出来2个点的空闲)
 		}
 		delete[] statusMap;
 		delete[] statusMapB;
 
-		// Step 4 选点之后，利用makeNN建立kdtree, 计算点的最近邻和父点
+		// Step 3 为金字塔每一层构造的特征点，计算其同层的邻居点 和 上一层的父亲点
 		makeNN();
 
 		// 设置一些变量的值，thisToNext表示当前帧到下一帧的位姿变换，
 		// snapped frameID snappedAt这三个变量在后续判断是否跟踪了足够多的图像帧能够初始化时用到。
-		thisToNext = SE3();
+		thisToNext = SE3();   // 当前帧到下一阵的位姿变换
 		snapped = false;   //; 初始化的时候位移是否足够大了
 		frameID = snappedAt = 0;
 
 		for (int i = 0; i < pyrLevelsUsed; i++)
-			dGrads[i].setZero();
+			dGrads[i].setZero();  //; 这个变量好像没用到？
 	}
 
 	//@ 重置点的energy, idepth_new参数
@@ -1027,14 +1031,22 @@ namespace dso
 	}
 
 	//@ 生成每一层点的KDTree, 并用其找到邻近点集和父点
+	/**
+	 * @brief 这个操作简单明了：为上一步在金字塔不同层提取到的特征点（坐标是在该点所在的金字塔层上的坐标）构建kdtree，
+	 *        然后为每一层上的所有特征点，首先寻找同一层它的最近10个点标记为邻居点，然后把它坐标变换到上一层寻找上一层
+	 *        最近的点标记为父亲点。
+	 */
 	void CoarseInitializer::makeNN()
 	{
+		/* 每一金字塔层选取的像素点构成一个KD树，为每层的点找到最近邻的10个点。pts[i].neighbours[myidx]=ret_index[k];
+		  并且会在上一层找到该层像素点的parent，（最高层除外）pts[i].parent = ret_index[0];。用于后续提供初值，加速优化。
+		 原文链接：https://blog.csdn.net/tanyong_98/article/details/106177134
+		*/
 		const float NNDistFactor = 0.05;
 		// 第一个参数为distance, 第二个是datasetadaptor, 第三个是维数
 		typedef nanoflann::KDTreeSingleIndexAdaptor<
 			nanoflann::L2_Simple_Adaptor<float, FLANNPointcloud>,
-			FLANNPointcloud, 2>
-			KDTree;
+			FLANNPointcloud, 2> KDTree;
 
 		// build indices
 		FLANNPointcloud pcs[PYR_LEVELS]; // 每层建立一个点云
@@ -1056,16 +1068,16 @@ namespace dso
 			Pnt *pts = points[lvl];
 			int npts = numPoints[lvl];
 
-			int ret_index[nn];	// 搜索到的临近点
+			int ret_index[nn];	// 搜索到的临近点的索引
 			float ret_dist[nn]; // 搜索到点的距离
 			// 搜索结果, 最近的nn个和1个
 			nanoflann::KNNResultSet<float, int, int> resultSet(nn);
 			nanoflann::KNNResultSet<float, int, int> resultSet1(1);
-
+			//; 遍历这一层的所有点
 			for (int i = 0; i < npts; i++)
 			{
 				//resultSet.init(pts[i].neighbours, pts[i].neighboursDist );
-				resultSet.init(ret_index, ret_dist);
+				resultSet.init(ret_index, ret_dist);  //; 搜索的最近点的结果
 				Vec2f pt = Vec2f(pts[i].u, pts[i].v); // 当前点
 				// 使用建立的KDtree, 来查询最近邻
 				indexes[lvl]->findNeighbors(resultSet, (float *)&pt, nanoflann::SearchParams());
@@ -1075,25 +1087,29 @@ namespace dso
 				for (int k = 0; k < nn; k++)
 				{
 					pts[i].neighbours[myidx] = ret_index[k];	  // 最近的索引
+					//! 疑问：距离使用指数形式是啥意思？而且还乘了一个常量0.05
 					float df = expf(-ret_dist[k] * NNDistFactor); // 距离使用指数形式
 					sumDF += df;								  // 距离和
-					pts[i].neighboursDist[myidx] = df;
+					pts[i].neighboursDist[myidx] = df;  //; 存储指数距离
 					assert(ret_index[k] >= 0 && ret_index[k] < npts);
 					myidx++;
 				}
 				// 对距离进行归10化,,,,,
+				//! 归10化又是啥操作？
 				for (int k = 0; k < nn; k++)
 					pts[i].neighboursDist[k] *= 10 / sumDF;
 
 				//* 高一层的图像中找到该点的父节点
 				if (lvl < pyrLevelsUsed - 1)
 				{
-					resultSet1.init(ret_index, ret_dist);
+					resultSet1.init(ret_index, ret_dist);  //; 在当前层的高一层搜索的父节点的结果
 					pt = pt * 0.5f - Vec2f(0.25f, 0.25f); // 换算到高一层
+					//; 利用高一层构造的kdtree查找父节点，注意使用的是resultSet1, 定义变量的时候传给构造函数的
+					//; 参数是1，所以这里就只查找最近的一个点
 					indexes[lvl + 1]->findNeighbors(resultSet1, (float *)&pt, nanoflann::SearchParams());
 
 					pts[i].parent = ret_index[0];						   // 父节点
-					pts[i].parentDist = expf(-ret_dist[0] * NNDistFactor); // 到父节点的距离(在高层中)
+					pts[i].parentDist = expf(-ret_dist[0] * NNDistFactor); // 到父节点的距离(在高层中的距离)
 
 					assert(ret_index[0] >= 0 && ret_index[0] < numPoints[lvl + 1]);
 				}
