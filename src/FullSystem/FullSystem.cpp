@@ -847,14 +847,15 @@ namespace dso
 				coarseInitializer->setFirst(&Hcalib, fh);
 				//! 至此，整个系统传入的第1帧图像处理结束，等待传入下一帧图像
 			}
-			//! 整个系统第2帧图像进入，用第2帧图像对系统的第1帧图像进行跟踪
+			//! 整个系统第2 3 4 5...帧图像进入，用这些图像对系统的 第1帧（注意都是对第1帧） 图像进行跟踪
 			else if (coarseInitializer->trackFrame(fh, outputWrapper)) // if SNAPPED
 			{
 				// Step 4.2 跟踪成功, 完成初始化
-				initializeFromInitializer(fh);
+				initializeFromInitializer(fh);   //; 初始化成功，把当前帧加入到系统滑窗中
 				lock.unlock();
 				deliverTrackedFrame(fh, true);
 			}
+			//; 如果第2 3 4 5...帧跟踪第1帧没有成功，那么就把这些帧删掉。但是注意这些帧的shell还是保留的
 			else
 			{
 				// if still initializing
@@ -1197,18 +1198,26 @@ namespace dso
 	}
 
 	//@ 从初始化中提取出信息, 用于跟踪.
+	/**
+	 * @brief  初始化成功，设置整个系统的一些初始变量，为后面整个系统的跟踪做准备
+	 *    参考博客： https://blog.csdn.net/tanyong_98/article/details/106199045?spm=1001.2014.3001.5502
+	 * 
+	 * @param[in] newFrame  初始化成功的那一帧（注意整个系统的第1帧已经被保存下来了）
+	 */
 	void FullSystem::initializeFromInitializer(FrameHessian *newFrame)
 	{
 		boost::unique_lock<boost::mutex> lock(mapMutex);
 
-		//[ ***step 1*** ] 把第一帧设置成关键帧, 加入队列, 加入EnergyFunctional
+		// Step 1  把第一帧设置成关键帧, 加入队列, 加入EnergyFunctional（能量函数）
 		// add firstframe.
 		FrameHessian *firstFrame = coarseInitializer->firstFrame; // 第一帧增加进地图
-		firstFrame->idx = frameHessians.size();					  // 赋值给它id (0开始)
-		frameHessians.push_back(firstFrame);					  // 地图内关键帧容器
-		firstFrame->frameID = allKeyFramesHistory.size();		  // 所有历史关键帧id
-		allKeyFramesHistory.push_back(firstFrame->shell);		  // 所有历史关键帧
-		ef->insertFrame(firstFrame, &Hcalib);
+		//; frameHessians是一个FrameHessian的Vector，加入Vector中
+		firstFrame->idx = frameHessians.size();	  // 赋值给它id (0开始)
+		frameHessians.push_back(firstFrame);	  // 地图内关键帧容器
+		firstFrame->frameID = allKeyFramesHistory.size();	// 所有历史关键帧id
+		allKeyFramesHistory.push_back(firstFrame->shell);   // 所有历史关键帧
+		//; 把第1帧加入优化，即加入能量方程
+		ef->insertFrame(firstFrame, &Hcalib);   //; 当前帧和相机内参 加入能量方程
 		setPrecalcValues(); // 设置相对位姿预计算值
 
 		//int numPointsTotal = makePixelStatus(firstFrame->dI, selectionMap, wG[0], hG[0], setting_desiredDensity);

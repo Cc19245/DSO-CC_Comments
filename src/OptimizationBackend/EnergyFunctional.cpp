@@ -41,30 +41,42 @@ namespace dso
 	bool EFDeltaValid = false;	  //!< 是否设置状态增量值
 
 	//@ 计算adHost(F), adTarget(F)
-	// 传的参数也没用啊
+	/**
+	 * @brief 建立两帧之间的相对状态对主导帧和目标帧的状态的求导。（因为优化的变量是
+	 *          各帧的绝对状态而不是相对状态，在后面的滑窗优化中会使用到）
+	 * 	参考博客： https://blog.csdn.net/tanyong_98/article/details/106199045?spm=1001.2014.3001.5502
+	 *           https://blog.csdn.net/weixin_43424002/article/details/114629354
+	 *      calcResAndGS函数里，求的是光度残差对相对位姿的偏导，而利用伴随表示可以求相对位姿对绝对位姿的导数
+	 * @param[in] Hcalib   相机内参hessian, 函数里面并没有用到
+	 */
 	void EnergyFunctional::setAdjointsF(CalibHessian *Hcalib)
 	{
-
 		if (adHost != 0)
 			delete[] adHost;
 		if (adTarget != 0)
 			delete[] adTarget;
+		//; 定义两个数组，分别用来存储主导帧和目标帧
 		adHost = new Mat88[nFrames * nFrames];
 		adTarget = new Mat88[nFrames * nFrames];
 
+		// 这里是会建立尽可能多的主导帧和目标帧的关联，即遍历所有帧，将所有帧作为当前帧的目标帧。
 		for (int h = 0; h < nFrames; h++)	  // 主帧
+		{
 			for (int t = 0; t < nFrames; t++) // 目标帧
 			{
-				FrameHessian *host = frames[h]->data;
+				FrameHessian *host = frames[h]->data;  //; 从能量函数中把FrameHessian拿出来
 				FrameHessian *target = frames[t]->data;
 
+				//; 这里推测位姿应该是从左往右读的，这样就是T_t_w * T_h_w.inv = T_t_w * T_w_h = T_t_h，即主帧到目标帧的变换
+				//; 如果是从右往左读的，那就变成T_w_t * T_w_h.inv = T_w_t * T_h_w，显然这是不对的
 				SE3 hostToTarget = target->get_worldToCam_evalPT() * host->get_worldToCam_evalPT().inverse();
 
 				Mat88 AH = Mat88::Identity();
 				Mat88 AT = Mat88::Identity();
 
 				// 见笔记推导吧, 或者https://www.cnblogs.com/JingeTU/p/9077372.html
-				AH.topLeftCorner<6, 6>() = -hostToTarget.Adj().transpose(); //* 转置是因为后面stitchDoubleInternal计算hessian时候就不转了
+				//* 转置是因为后面stitchDoubleInternal计算hessian时候就不转了
+				AH.topLeftCorner<6, 6>() = -hostToTarget.Adj().transpose(); 
 				AT.topLeftCorner<6, 6>() = Mat66::Identity();
 
 				// 光度参数, 合并项对参数求导
@@ -88,6 +100,7 @@ namespace dso
 				adHost[h + t * nFrames] = AH;
 				adTarget[h + t * nFrames] = AT;
 			}
+		}
 		cPrior = VecC::Constant(setting_initialCalibHessian); // 常数矩阵
 
 		// float型
@@ -99,12 +112,13 @@ namespace dso
 		adTargetF = new Mat88f[nFrames * nFrames];
 
 		for (int h = 0; h < nFrames; h++)
+		{
 			for (int t = 0; t < nFrames; t++)
 			{
 				adHostF[h + t * nFrames] = adHost[h + t * nFrames].cast<float>();
 				adTargetF[h + t * nFrames] = adTarget[h + t * nFrames].cast<float>();
 			}
-
+		}
 		cPriorF = cPrior.cast<float>();
 
 		EFAdjointsValid = true;
@@ -123,6 +137,7 @@ namespace dso
 
 		nFrames = nResiduals = nPoints = 0;
 
+		//; CPARS = 4
 		HM = MatXX::Zero(CPARS, CPARS); // 初始的, 后面增加frame改变
 		bM = VecX::Zero(CPARS);
 
@@ -450,14 +465,16 @@ namespace dso
 	{
 		// 建立优化用的能量函数帧. 并加进能量函数frames中
 		EFFrame *eff = new EFFrame(fh);
-		eff->idx = frames.size();
+		eff->idx = frames.size();  //; frames是能量函数帧的vector
 		frames.push_back(eff);
 
+		// 表示energyFunction中图像帧数量的nFrames加1（用来确定优化变量的维数，每个图像帧是8维）
 		nFrames++;
 		fh->efFrame = eff; // FrameHessian 指向能量函数帧
 
 		assert(HM.cols() == 8 * nFrames + CPARS - 8); // 边缘化掉一帧, 缺8个
-		// 一个帧8个参数 + 相机内参
+
+		//; resize优化变量的维数，一个帧8个参数 + 相机内参（4维）
 		bM.conservativeResize(8 * nFrames + CPARS);
 		HM.conservativeResize(8 * nFrames + CPARS, 8 * nFrames + CPARS);
 		// 新帧的块为0
@@ -469,7 +486,7 @@ namespace dso
 		EFAdjointsValid = false;
 		EFDeltaValid = false;
 
-		setAdjointsF(Hcalib); // 设置伴随矩阵
+		setAdjointsF(Hcalib); // 对相机内参设置伴随矩阵
 		makeIDX();			  // 设置ID
 
 		for (EFFrame *fh2 : frames)

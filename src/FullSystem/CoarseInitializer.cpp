@@ -541,6 +541,7 @@ namespace dso
 				//* 像素误差对逆深度的导数，取模倒数
 				//! 疑问：这是啥玩意?
 				//! 解答：point->maxstep是逆深度更新的最大增量值，但是这里为啥这么设置就不太懂了
+				//; 新增一个博客中的解释：maxstep可以理解为移动单位像素，深度的变化
 				float maxstep = 1.0f / Vec2f(dxdd * fxl, dydd * fyl).norm(); //? 为什么这么设置
 				if (maxstep < point->maxstep)
 					point->maxstep = maxstep;
