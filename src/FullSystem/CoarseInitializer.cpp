@@ -151,7 +151,7 @@ namespace dso
 		{
 			//[ ***step 3*** ] 使用计算过的上一层来初始化下一层
 			//; 1.如果不是金字塔的最高层，那么就用上层来初始化下一层, 
-			//;   将当前层所有点的逆深度设置为的它们 parent （上一层）的逆深度
+			//;   利用高斯分布归一化积，利用 parent （上一层）的逆深度更新当前层的点的逆深度
 			if (lvl < pyrLevelsUsed - 1)
 				propagateDown(lvl + 1);
 
@@ -161,16 +161,17 @@ namespace dso
 			// 这个函数只调一次，用邻居点抢救下坏点。只抢救最高层的, 其余层只用这个函数的赋值操作
 			resetPoints(lvl); // 这里对顶层进行初始化!  CC：错误！没发现对顶层的操作
 
-			//[ ***step 4*** ] 迭代之前计算能量, Hessian等
+			// Step 4  迭代之前计算能量, 正规方程的Hessian矩阵等，注意里面一边计算雅克比，一边在计算舒尔补的结果
 			//! 重要：计算当前层图像的正规方程！
 			Vec3f resOld = calcResAndGS(lvl, H, b, Hsc, bsc, refToNew_current, refToNew_aff_current, false);
+			
+			//; 把这一次计算出来的点的能量、逆深度等赋值给旧的对应变量，用于下一次计算
 			applyStep(lvl); // 新的能量付给旧的
 
 			float lambda = 0.1;
 			float eps = 1e-4;
 			int fails = 0;
 
-			// 初始信息
 			if (printDebug)
 			{
 				printf("lvl %d, it %d (l=%f) %s: %.3f+%.5f -> %.3f+%.5f (%.3f->%.3f) (|inc| = %f)! \t",
@@ -186,13 +187,13 @@ namespace dso
 				std::cout << refToNew_current.log().transpose() << " AFF " << refToNew_aff_current.vec().transpose() << "\n";
 			}
 
-			//[ ***step 5*** ] 迭代求解
+			// Step 5 LM迭代求解求解本次正规方程对状态变量的更新
 			int iteration = 0;
 			while (true)
 			{
-				//[ ***step 5.1*** ] 计算边缘化后的Hessian矩阵, 以及一些骚操作
+				// Step 5.1  计算边缘化后的Hessian矩阵, 以及一些骚操作
 				Mat88f Hl = H;
-				// 对角线元素乘了个值
+				// 对角线元素乘了个值, 就是LM算法
 				for (int i = 0; i < 8; i++)
 					Hl(i, i) *= (1 + lambda); // 这不是LM么,论文说没用, 嘴硬
 				// 舒尔补, 边缘化掉逆深度状态, 对应高斯牛顿方程消元后左侧δx21的系数
@@ -202,36 +203,44 @@ namespace dso
 				//? wM为什么这么乘, 它对应着状态的SCALE
 				//? (0.01f/(w[lvl]*h[lvl]))是为了减小数值, 更稳定?
 				// wM是个对角矩阵 对角线原始为 1  1  1  0.5  0.5  0.5  10  1000
+				//; wM这些位置对应的就是平移3、旋转3、广度2。感觉这里和VINS里面的操作是一样的，就是让不同部分的数量级
+				//; 相差不要太大，从而提高求矩阵的解的时候的数值稳定性
 				Hl = wM * Hl * wM * (0.01f / (w[lvl] * h[lvl]));
 				bl = wM * bl * (0.01f / (w[lvl] * h[lvl]));
 
-				//[ ***step 5.2*** ] 求解增量
+				// Step 5.2  求解增量
 				Vec8f inc;
 				if (fixAffine) // 固定光度参数
 				{
 					inc.head<6>() = -(wM.toDenseMatrix().topLeftCorner<6, 6>() * (Hl.topLeftCorner<6, 6>().ldlt().solve(bl.head<6>())));
-					inc.tail<2>().setZero();
+					inc.tail<2>().setZero();  //; 后面光度参数更新置0
 				}
 				else
-					inc = -(wM * (Hl.ldlt().solve(bl))); //=-H^-1 * b.
+				{
+					//; 注意这里和VINS中的也是一样的，前面对变量都*wM，这里求解的最终结果还是要*wM，而不应该是/wM,
+					//; 因为前面是在方程组的系数上*wM，相当于把方程组的解缩小了wM，所以这里恢复正常大小还要*wM
+					inc = -(wM * (Hl.ldlt().solve(bl))); // =-H^-1 * b. 正规方程求解公式
+				}
 
-				//[ ***step 5.3*** ] 更新状态, doStep中更新逆深度
+				// Step 5.3  更新状态, doStep中更新逆深度
 				SE3 refToNew_new = SE3::exp(inc.head<6>().cast<double>()) * refToNew_current;
 				AffLight refToNew_aff_new = refToNew_aff_current;
 				refToNew_aff_new.a += inc[6];
 				refToNew_aff_new.b += inc[7];
-				doStep(lvl, lambda, inc);
+				doStep(lvl, lambda, inc);  //; 求解逆深度增量，因为是对角阵，所以就变成求解标量了，运算量小
 
-				//[ ***step 5.4*** ] 计算更新后的能量并且与旧的对比判断是否accept
+				// Step 5.4  计算更新后的能量并且与旧的对比判断是否accept
 				Mat88f H_new, Hsc_new;
 				Vec8f b_new, bsc_new;
+				//; 注意这里又调用求正规方程的函数了，但是主要目的是为了求能量值
 				Vec3f resNew = calcResAndGS(lvl, H_new, b_new, Hsc_new, bsc_new, refToNew_new, refToNew_aff_new, false);
-				Vec3f regEnergy = calcEC(lvl);
-
+				Vec3f regEnergy = calcEC(lvl);   //; 计算上次求解的逆深度和这次求解的逆深度相对期望值的方差
+				
+				//; res部分是光度能量+附加的alpha能量（就是平移部分），reg部分是深度的方差能量
 				float eTotalNew = (resNew[0] + resNew[1] + regEnergy[1]);
 				float eTotalOld = (resOld[0] + resOld[1] + regEnergy[0]);
 
-				bool accept = eTotalOld > eTotalNew;
+				bool accept = eTotalOld > eTotalNew;  // 新求解的能量要 < 上一次的能量，才接受这一次迭代
 
 				if (printDebug)
 				{
@@ -249,12 +258,16 @@ namespace dso
 						   inc.norm());
 					std::cout << refToNew_new.log().transpose() << " AFF " << refToNew_aff_new.vec().transpose() << "\n";
 				}
-				//[ ***step 5.5*** ] 接受的话, 更新状态,; 不接受则增大lambda
+
+				// Step 5.5  接受的话, 更新状态,; 不接受则增大lambda
 				if (accept)
 				{
 					//? 这是啥   答：应该是位移足够大，才开始优化IR
+					//; 这个部分在计算正规方程的函数里有，如果alpha能量足够大的话，这个时候就是平移足够大了，
+					//; 此时返回的resNew[1]结果就是 alphaK * numPoints[lvl]
 					if (resNew[1] == alphaK * numPoints[lvl]) // 当 alphaEnergy > alphaK*npts
-						snapped = true;
+						snapped = true;   //; 标记位移已经足够大了
+					//; 注意这里直接更新了正规方程，因为上面求新的能量的时候就求出了新的正规方程
 					H = H_new;
 					b = b_new;
 					Hsc = Hsc_new;
@@ -262,7 +275,9 @@ namespace dso
 					resOld = resNew;
 					refToNew_aff_current = refToNew_aff_new;
 					refToNew_current = refToNew_new;
+					//; 把这一次计算出来的点的能量、逆深度等赋值给旧的对应变量，用于下一次计算
 					applyStep(lvl);
+					//; 更新所有点的逆深度期望值iR
 					optReg(lvl); // 更新iR
 					lambda *= 0.5;
 					fails = 0;
@@ -272,7 +287,7 @@ namespace dso
 				else
 				{
 					fails++;
-					lambda *= 4;
+					lambda *= 4;   //; 就是LM算法，这个对lambda的跟新算法和LM是一样的
 					if (lambda > 10000)
 						lambda = 10000;
 				}
@@ -281,7 +296,8 @@ namespace dso
 				// 迭代停止条件, 收敛/大于最大次数/失败2次以上
 				if (!(inc.norm() > eps) || iteration >= maxIterations[lvl] || fails >= 2)
 				{
-					Mat88f H, Hsc;
+					//; 定义这个局部变量干啥？也没用到
+					Mat88f H, Hsc;   
 					Vec8f b, bsc;
 
 					quitOpt = true;
@@ -291,26 +307,31 @@ namespace dso
 					break;
 				iteration++;
 			}
+
+			//; 更新这一层得到的总的能量值
 			latestRes = resOld;
 		}
 
-		//[ ***step 6*** ] 优化后赋值位姿, 从底层计算上层点的深度
+		// Step 6  优化后赋值位姿, 利用高斯分布归一化积 从底层计算上层点的深度
 		thisToNext = refToNew_current;
 		thisToNext_aff = refToNew_aff_current;
 
+		// 整个都结束了 用低层的逆深度点对高层的逆深度做了次更新
 		for (int i = 0; i < pyrLevelsUsed - 1; i++)
 			propagateUp(i);
 
 		frameID++;
+		// 只要有一次snapped为true了 以后就一直true了
 		if (!snapped)
 			snappedAt = 0;
 
 		if (snapped && snappedAt == 0)
-			snappedAt = frameID; // 位移足够的帧数
+			snappedAt = frameID; // 第一次出现位移够大的时刻的帧号 
 
 		debugPlot(0, wraps);
 
 		// 位移足够大, 再优化5帧才行
+		// 然后在第一次出现位移够大后连续再优化它5帧 最终结果作为输出
 		return snapped && frameID > snappedAt + 5;
 	}
 
@@ -406,13 +427,13 @@ namespace dso
 		int npts = numPoints[lvl];
 		Pnt *ptsl = points[lvl];
 		// Step 1. 遍历所有点，计算两个重要内容：
-		//;   1.H矩阵中的U和ba(深蓝PPT P29)，并且利用SSE加速pattern中的8个点的计算，结果存储在acc9的9x9矩阵中
-        //;   2.H矩阵中的W，bb，V对应的每个点的雅克比部分（注意不是最后的矩阵），为后面计算acc9SC中的Hsc和bsc做准备
+		//;   1.H矩阵中的U和b_A(深蓝PPT P29)，并且利用SSE加速pattern中的8个点的计算，结果存储在acc9的9x9矩阵中
+        //;   2.H矩阵中的W，b_B，V对应的每个点的雅克比部分（注意不是最后的矩阵），为后面计算acc9SC中的Hsc和bsc做准备
 		for (int i = 0; i < npts; i++)
 		{
 			Pnt *point = ptsl + i;  // 取出当前特征点
 
-			point->maxstep = 1e10;
+			point->maxstep = 1e10;   //; 这个是逆深度更新时的最大增量值
 			//; 如果这个点不好，那么就用它上次的能量值累加进去，但是并不计算这个点的雅克比
 			if (!point->isGood) // 点不好
 			{
@@ -446,7 +467,7 @@ namespace dso
 				int dy = patternP[idx][1];
 
 				// Pj' = R*(X/Z, Y/Z, 1) + t/Z, 变换到新的点, 深度仍然使用Host帧的!
-				//; 这里得到的就是j帧相机坐标系下的虚拟点
+				//; 这里得到的就是j帧相机坐标系下的虚拟点（不是j帧归一化相机平面的点，而是除以了i帧下的深度，而不是j帧下的深度）
 				Vec3f pt = RKi * Vec3f(point->u + dx, point->v + dy, 1) + t * point->idepth_new;
 				// 归一化坐标 Pj，也就是在j帧相机坐标系的归一化平面上的点
 				float u = pt[0] / pt[2];
@@ -485,6 +506,7 @@ namespace dso
 				// 论文公式4   huber范数用来降低高梯度点的权重？？感觉不是这样吧？huber和高梯度权重是俩东西
 			    // https://blog.csdn.net/xxxlinttp/article/details/89379785 博客写的很清晰 对应公式9 只不过乘
 			    // 了个2倍  无所谓 都乘约掉了
+				//! 疑问：这个鲁棒核函数还不太懂，到底是不是根据像素梯度设置的权重那部分？
 				float hw = fabs(residual) < setting_huberTH ? 1 : setting_huberTH / fabs(residual);
 				// huberweight * (2-huberweight) = Objective Function
 				// robust 权重和函数之间的关系
@@ -518,6 +540,7 @@ namespace dso
 
 				//* 像素误差对逆深度的导数，取模倒数
 				//! 疑问：这是啥玩意?
+				//! 解答：point->maxstep是逆深度更新的最大增量值，但是这里为啥这么设置就不太懂了
 				float maxstep = 1.0f / Vec2f(dxdd * fxl, dydd * fyl).norm(); //? 为什么这么设置
 				if (maxstep < point->maxstep)
 					point->maxstep = maxstep;
@@ -621,7 +644,7 @@ namespace dso
 		}
 		// 最终结果是算一个EAlpha的A值。但是EAlpha只定义了下初始化了一下
 		// 没有运算过程，所以A只恒为0
-		EAlpha.finish();	 //! 只是计算位移是否足够大
+		EAlpha.finish();	
 		//squaredNorm 二范数的平方		
 		//! 疑问：这里对逆深度均值为1的限制到底用没用？没用的话上面对E又计算了。所以最后结果就是它用在了E中，但是
 		//!  没有乘以前面了alphaW，也没有参与后面的hessain矩阵计算（即没有对变量变化提供帮助？）
@@ -660,7 +683,7 @@ namespace dso
 			// 看了个博客，说这个叫正则项为了加速优化过程，使其快速收敛
 			// 博客地址: https://blog.csdn.net/wubaobao1993/article/details/103871697 
 			// 说是下面这个是应对小位移的正则项 
-			//! 注意这里为什么只有8和9的位置加了对逆深度均值为1的能量的雅克比？
+			//! 注意：这里为什么只有8和9的位置加了对逆深度均值为1的能量的雅克比？
 			//; 因为8对应的是残差部分，对于一个能量函数来说（注意不是残差函数），其对应到正规方程里面，能量函数的一阶导
 			//; 就是残差部分，而能量函数的二阶导就是完整的hessian矩阵（注意不是近似的hessian，但是由于我们大部分都是
 			//; 用近似的hessian，所以这里附加部分用2完整的hessian也无所谓）
@@ -757,38 +780,51 @@ namespace dso
 	}
 
 	//* 计算旧的和新的逆深度与iR的差值, 返回旧的差, 新的差, 数目
-	//? iR到底是啥呢     答：IR是逆深度的均值，尺度收敛到IR
+	/**
+	 * @brief 计算上一次求解的逆深度与逆深度期望iR的方差、这一次求解的逆深度与逆深度期望值iR的方差、计算方差用的好的点数目
+	 *   //? iR到底是啥呢     答：IR是逆深度的均值，尺度收敛到IR
+	 * @param[in] lvl 
+	 * @return Vec3f 
+	 */
 	Vec3f CoarseInitializer::calcEC(int lvl)
 	{
 		if (!snapped)
 			return Vec3f(0, 0, numPoints[lvl]);
-		AccumulatorX<2> E;
+		AccumulatorX<2> E;  // 2维的累加器，计算二维向量每个维度的和
 		E.initialize();
-		int npts = numPoints[lvl];
+		int npts = numPoints[lvl];  // 这一层点的数量
 		for (int i = 0; i < npts; i++)
 		{
-			Pnt *point = points[lvl] + i;
+			Pnt *point = points[lvl] + i;  // 取出这个点
 			if (!point->isGood_new)
 				continue;
+			//; 下面两个变量就计算上一次的深度与深度期望的差  以及  这一次的深度与深度期望的差
 			float rOld = (point->idepth - point->iR);
 			float rNew = (point->idepth_new - point->iR);
 			E.updateNoWeight(Vec2f(rOld * rOld, rNew * rNew)); // 求和
 
 			//printf("%f %f %f!\n", point->idepth, point->idepth_new, point->iR);
 		}
-		E.finish();
+		E.finish();  //; 把累加的结果更新到累加器成员变量 A1m中
 
 		//printf("ER: %f %f %f!\n", couplingWeight*E.A1m[0], couplingWeight*E.A1m[1], (float)E.num.numIn1m);
+		//; 返回上一次深度的期望方差、这一次的深度期望方差、总的点数
 		return Vec3f(couplingWeight * E.A1m[0], couplingWeight * E.A1m[1], E.num);
 	}
 
 	//* 使用最近点来更新每个点的iR, smooth的感觉
+	/**
+	 * @brief 用当前点的逆深度 和 当前点的最近邻点的逆深度期望值iR 做一个平均，更新当前点的iR
+	 * 
+	 * @param[in] lvl 
+	 */
 	void CoarseInitializer::optReg(int lvl)
 	{
 		int npts = numPoints[lvl];
 		Pnt *ptsl = points[lvl];
 
 		//* 位移不足够则设置iR是1
+		// Step 1 如果snapped为false，说明此时初始化的位移还不足够，那么强制逆深度的期望iR值为1
 		if (!snapped)
 		{
 			for (int i = 0; i < npts; i++)
@@ -796,6 +832,7 @@ namespace dso
 			return;
 		}
 
+		// Step 2 运行到这里的时候snapped为true，说明初始化位移已经足够大了，那么用邻居点决定其值
 		for (int i = 0; i < npts; i++)
 		{
 			Pnt *point = ptsl + i;
@@ -809,23 +846,33 @@ namespace dso
 			{
 				if (point->neighbours[j] == -1)
 					continue;
-				Pnt *other = ptsl + point->neighbours[j];
+				Pnt *other = ptsl + point->neighbours[j];  //; 去除这个点的邻居点
 				if (!other->isGood)
 					continue;
-				idnn[nnn] = other->iR;
+				idnn[nnn] = other->iR;  //; 存储邻居点的逆深度期望值
 				nnn++;
 			}
 
 			// 与最近点中位数进行加权获得新的iR
 			if (nnn > 2)
 			{
+				// nth_element是求区间第k小的（划重点） 例如里面就是求nnn/2这个值呢
+				//; 这个函数应该就是传入一个数组，然后排序，然后算里面第k小的值
 				std::nth_element(idnn, idnn + nnn / 2, idnn + nnn); // 获得中位数
+				// IR赋值位置 用了个权重来做平衡
+				//; 这里类似低通滤波，用当前点的逆深度值和他邻居点的逆深度的期望值做一个平均
+				//; regWeight = 0.8(玄学参数)
 				point->iR = (1 - regWeight) * point->idepth + regWeight * idnn[nnn / 2];
 			}
 		}
 	}
 
 	//* 使用归一化积来更新高层逆深度值
+	/**
+	 * @brief 利用底层，更新上一层的逆深度和iR，利用的原理是高斯分布归一化积
+	 * 
+	 * @param[in] srcLvl 
+	 */
 	void CoarseInitializer::propagateUp(int srcLvl)
 	{
 		assert(srcLvl + 1 < pyrLevelsUsed);
@@ -837,40 +884,51 @@ namespace dso
 		Pnt *ptst = points[srcLvl + 1];
 
 		// set to zero.
+		// Step 1  遍历高层的点，先对他们的iR清0
 		for (int i = 0; i < nptst; i++)
 		{
 			Pnt *parent = ptst + i;
 			parent->iR = 0;
 			parent->iRSumNum = 0;
 		}
+
 		//* 更新在上一层的parent
+		// Step 2  遍历这一层的点，寻找这个点的父点，计算高斯分布归一化积的中间变量
 		for (int i = 0; i < nptss; i++)
 		{
 			Pnt *point = ptss + i;
 			if (!point->isGood)
 				continue;
-
+			//; 根据这一层的点的父亲点的索引，在高层上找到对应的父亲点
 			Pnt *parent = ptst + point->parent;
 			parent->iR += point->iR * point->lastHessian; //! 均值*信息矩阵 ∑ (sigma*u)
 			parent->iRSumNum += point->lastHessian;		  //! 新的信息矩阵 ∑ sigma
 		}
 
+		// Step 3  再遍历上一层的点，计算最后高斯分布归一化积的结果
 		for (int i = 0; i < nptst; i++)
 		{
 			Pnt *parent = ptst + i;
 			if (parent->iRSumNum > 0)
 			{
+				//; 逆深度和逆深度的均值，都是用高斯分布归一化积来更新
 				parent->idepth = parent->iR = (parent->iR / parent->iRSumNum); //! 高斯归一化积后的均值
 				parent->isGood = true;
 			}
 		}
-
+		// Step 4  最后再对高层的点，利用其临近点进行一波逆深度和iR的更新
 		optReg(srcLvl + 1); // 使用附近的点来更新IR和逆深度
 	}
+
 
 	//@ 使用上层信息来初始化下层
 	//@ param: 当前的金字塔层+1
 	//@ note: 没法初始化顶层值
+	/**
+	 * @brief 利用上一层，更新当前层的逆深度和iR，利用的原理是高斯分布归一化积
+	 * 
+	 * @param[in] srcLvl 
+	 */
 	void CoarseInitializer::propagateDown(int srcLvl)
 	{
 		assert(srcLvl > 0);
@@ -880,6 +938,7 @@ namespace dso
 		Pnt *ptss = points[srcLvl];		   // 当前层+1, 上一层的点集
 		Pnt *ptst = points[srcLvl - 1];	   // 当前层点集
 
+		// Step 1 遍历当前层的所有点，用父点更新当前层点的逆深度和iR
 		for (int i = 0; i < nptst; i++)
 		{
 			Pnt *point = ptst + i;				// 遍历当前层的点
@@ -894,6 +953,7 @@ namespace dso
 				point->isGood = true;
 				point->lastHessian = 0;
 			}
+			//; 如果这个点是一个好点，那么就利用父点的逆深度和当前点的逆深度，使用高斯分布归一化积，来更新当前点的逆深度
 			else
 			{
 				// 通过hessian给point和parent加权求得新的iR
@@ -902,6 +962,7 @@ namespace dso
 				point->iR = point->idepth = point->idepth_new = newiR;
 			}
 		}
+		// Step 2 对当前层的点的iR，考虑其邻居点，进行一个平滑
 		//? 为什么在这里又更新了iR, 没有更新 idepth
 		// 感觉更多的是考虑附近点的平滑效果
 		optReg(srcLvl - 1); // 当前层
@@ -1077,7 +1138,13 @@ namespace dso
 		}
 	}
 
-	//* 求出状态增量后, 计算被边缘化掉的逆深度, 更新逆深度
+	/**
+	 * @brief 求出状态增量后, 计算被边缘化掉的逆深度的更新量, 更新逆深度
+	 * 
+	 * @param[in] lvl  金字塔层数
+	 * @param[in] lambda  LM求解的时候对角线的系数变化
+	 * @param[in] inc  8位状态变量的增量结果, 用于求解逆深度部分正规方程的右侧b部分
+	 */
 	void CoarseInitializer::doStep(int lvl, float lambda, Vec8f inc)
 	{
 
@@ -1089,6 +1156,7 @@ namespace dso
 		{
 			if (!pts[i].isGood)
 				continue;
+			// Step 1 计算这个点的逆深度增量值, 对角阵求逆，直接变成了n个标量方程的计算
 			// JbBuffer[i][8] 是  (Jρ).t * r21
 			// JbBuffer[i].head<8>().dot(inc)对应Hρx21*δx21
 			//! dd*r + (dp*dd)^T*delta_p
@@ -1096,8 +1164,10 @@ namespace dso
 			//! dd * delta_d = dd*r - (dp*dd)^T*delta_p = b
 			//! delta_d = b * dd^-1
 			// 这个是逆深度的增量值	  
+			//; 注意这个时候jbBuffer[i][9]已经就是V^-1了，所以这里直接*即可，不用/
 			float step = -b * JbBuffer[i][9] / (1 + lambda);
-
+			
+			//; 逆深度更新的最大增量值
 			float maxstep = maxPixelStep * pts[i].maxstep; // 逆深度最大只能增加这些
 			if (maxstep > idMaxStep)
 				maxstep = idMaxStep;
@@ -1126,11 +1196,13 @@ namespace dso
 		int npts = numPoints[lvl];
 		for (int i = 0; i < npts; i++)
 		{
+			// 如果当前点是坏点，把逆深度和最新的逆深度都复制成对逆深度的期望值 
 			if (!pts[i].isGood)
 			{
 				pts[i].idepth = pts[i].idepth_new = pts[i].iR;
 				continue;
 			}
+			// 否则是好点，然后就用这一层计算出来的新的能量、逆深度、协方差，来更新上一次的对应变量，为下一次做准备
 			pts[i].energy = pts[i].energy_new;
 			pts[i].isGood = pts[i].isGood_new;
 			pts[i].idepth = pts[i].idepth_new;
