@@ -42,11 +42,20 @@ namespace dso
 
 	//@ 计算adHost(F), adTarget(F)
 	/**
-	 * @brief 建立两帧之间的相对状态对主导帧和目标帧的状态的求导。（因为优化的变量是
-	 *          各帧的绝对状态而不是相对状态，在后面的滑窗优化中会使用到）
-	 * 	参考博客： https://blog.csdn.net/tanyong_98/article/details/106199045?spm=1001.2014.3001.5502
-	 *           https://blog.csdn.net/weixin_43424002/article/details/114629354
-	 *      calcResAndGS函数里，求的是光度残差对相对位姿的偏导，而利用伴随表示可以求相对位姿对绝对位姿的导数
+	 * @brief 计算伴随矩阵：建立两帧之间的相对状态对主导帧和目标帧的状态的求导。（因为优化的变量是
+	 *          各帧的绝对状态而不是相对状态，在后面的滑窗优化中会使用到）。
+	 * 
+	 * //; 总结这个目的：其实就是为了得到相对状态对绝对状态的雅克比，因为之前求的都是能量函数对相对状态的雅克比
+	 *     这里再算相对状态对绝对状态的雅克比，后面就可以利用链式法则得到能量函数对绝对状态的雅克比
+	 * 
+	 *       calcResAndGS函数里，求的是光度残差对相对位姿的偏导，而利用伴随表示可以求相对位姿对绝对位姿的导数
+	 * 	参考博客：
+	 *      1.两篇对函数流程的讲解： 
+	 *         https://blog.csdn.net/tanyong_98/article/details/106199045?spm=1001.2014.3001.5502
+	 *         https://blog.csdn.net/weixin_43424002/article/details/114629354
+	 *      2.对DSO中使用的伴随矩阵的推导：
+	 *         https://www.cnblogs.com/JingeTU/p/9077372.html
+	 *       伴随矩阵本身的推导（视觉SLAM十四讲中的第4讲课后习题5、6答案）： https://zhuanlan.zhihu.com/p/388616110
 	 * @param[in] Hcalib   相机内参hessian, 函数里面并没有用到
 	 */
 	void EnergyFunctional::setAdjointsF(CalibHessian *Hcalib)
@@ -67,7 +76,7 @@ namespace dso
 				FrameHessian *host = frames[h]->data;  //; 从能量函数中把FrameHessian拿出来
 				FrameHessian *target = frames[t]->data;
 
-				//; 这里推测位姿应该是从左往右读的，这样就是T_t_w * T_h_w.inv = T_t_w * T_w_h = T_t_h，即主帧到目标帧的变换
+				//; 这里位姿是从左往右读的，这样就是T_t_w * T_h_w.inv = T_t_w * T_w_h = T_t_h，即主帧到目标帧的变换
 				//; 如果是从右往左读的，那就变成T_w_t * T_w_h.inv = T_w_t * T_h_w，显然这是不对的
 				SE3 hostToTarget = target->get_worldToCam_evalPT() * host->get_worldToCam_evalPT().inverse();
 
@@ -76,31 +85,47 @@ namespace dso
 
 				// 见笔记推导吧, 或者https://www.cnblogs.com/JingeTU/p/9077372.html
 				//* 转置是因为后面stitchDoubleInternal计算hessian时候就不转了
-				AH.topLeftCorner<6, 6>() = -hostToTarget.Adj().transpose(); 
+				//; T_th关于T_hw的偏导
+				AH.topLeftCorner<6, 6>() = -hostToTarget.Adj().transpose();   //; 这里Adj就是直接调用sophus库求伴随矩阵
+				//; T_th关于T_tw的偏导
 				AT.topLeftCorner<6, 6>() = Mat66::Identity();
 
 				// 光度参数, 合并项对参数求导
+				//! 疑问：光度参数这个部分始终还是没有特别明白，有一篇博客讲了这个：https://blog.csdn.net/weixin_43424002/article/details/114629354
+				//; 这里就先简单的认为把两帧的绝对光度系数转成了两帧之间的相对广度系数，然后由于能量函数中是利用两帧的
+				//; 相对光度参数求残差，所以这里还要利用相对光度参数和绝对光度参数之间的关系，转化成能量函数对绝对光度参数的导数
+				//; 这里就是在计算相对相对光度对绝对光度的雅克比，然后后面利用链式法则得到能量函数对绝对光度参数的雅克比
 				//! E = Ij - tj*exp(aj) / ti*exp(ai) * Ii - (bj - tj*exp(aj) / ti*exp(ai) * bi)
 				//! a = - tj*exp(aj) / ti*exp(ai),  b = - (bj - tj*exp(aj) / ti*exp(ai) * bi)
-				Vec2f affLL = AffLight::fromToVecExposure(host->ab_exposure, target->ab_exposure, host->aff_g2l_0(), target->aff_g2l_0()).cast<float>();
+				Vec2f affLL = AffLight::fromToVecExposure(host->ab_exposure,
+					target->ab_exposure, host->aff_g2l_0(), target->aff_g2l_0()).cast<float>();
 				AT(6, 6) = -affLL[0]; //! a'(aj)
 				AH(6, 6) = affLL[0];  //! a'(ai)
 				AT(7, 7) = -1;		  //! b'(bj)
 				AH(7, 7) = affLL[0];  //! b'(bi)
 
+				//; 再对 相对状态 对 绝对状态 的雅克比进行一个数值的缩放，应该也是为了数值稳定性？
+				//! 疑问1: 为什么是按照行来赋值，比如说平移部分应该是左上角3*3, 但是为什么缩放是作用到3*8上而不是3*3上？
+				//!  解答1：感觉是从矩阵乘法的角度来看，H的平移部分又乘矩阵的时候，平移的三行是都参与的，所以如果要缩放就要
+				//!        把平移的3行全部缩放，而不能只缩放左上角3*3
+				//! 疑问2：这里手动把各个部分的雅克比缩放了，那么后面真正求得的对状态的增量是否有缩放呢？和VINS一样，要还原
+				//!       回原来的数值大小啊！------> 看后面有没有这部分吧
 				AH.block<3, 8>(0, 0) *= SCALE_XI_TRANS;
 				AH.block<3, 8>(3, 0) *= SCALE_XI_ROT;
 				AH.block<1, 8>(6, 0) *= SCALE_A;
 				AH.block<1, 8>(7, 0) *= SCALE_B;
+
 				AT.block<3, 8>(0, 0) *= SCALE_XI_TRANS;
 				AT.block<3, 8>(3, 0) *= SCALE_XI_ROT;
-				AT.block<1, 8>(6, 0) *= SCALE_A; //? 已经是乘过的, 怎么又乘一遍
+				AT.block<1, 8>(6, 0) *= SCALE_A;
 				AT.block<1, 8>(7, 0) *= SCALE_B;
 
+				//; 把相对状态 对 绝对状态的雅克比存储起来
 				adHost[h + t * nFrames] = AH;
 				adTarget[h + t * nFrames] = AT;
 			}
 		}
+		//; VecC是4x1的常数向量，这个应该是对应相机的内参部分, setting_initialCalibHessian = 5e9
 		cPrior = VecC::Constant(setting_initialCalibHessian); // 常数矩阵
 
 		// float型
@@ -111,6 +136,7 @@ namespace dso
 		adHostF = new Mat88f[nFrames * nFrames];
 		adTargetF = new Mat88f[nFrames * nFrames];
 
+		//; 这里又把上面求得局部变量赋值给类的成员变量（为啥上面算的时候不直接赋值给类的成员变量？）
 		for (int h = 0; h < nFrames; h++)
 		{
 			for (int t = 0; t < nFrames; t++)
@@ -119,7 +145,7 @@ namespace dso
 				adTargetF[h + t * nFrames] = adTarget[h + t * nFrames].cast<float>();
 			}
 		}
-		cPriorF = cPrior.cast<float>();
+		cPriorF = cPrior.cast<float>();  //; 又把相机内参赋值给列的成员变量
 
 		EFAdjointsValid = true;
 	}
@@ -184,29 +210,47 @@ namespace dso
 	}
 
 	//@ 计算各种状态的相对量的增量
+	//! 疑问：在干啥？这个函数基本没看懂
+	/**
+	 * @brief 
+	 * 
+	 * @param[in] HCalib 
+	 */
 	void EnergyFunctional::setDeltaF(CalibHessian *HCalib)
 	{
 		if (adHTdeltaF != 0)
 			delete[] adHTdeltaF;
+		//; Mat18f是1行8列的行向量
 		adHTdeltaF = new Mat18f[nFrames * nFrames];
 		for (int h = 0; h < nFrames; h++)
+		{
 			for (int t = 0; t < nFrames; t++)
 			{
 				int idx = h + t * nFrames;
 				//! delta_th = Adj * delta_t or delta_th = Adj * delta_h
 				// 加一起应该是, 两帧之间位姿变换的增量, 因为h变一点, t变一点
-				adHTdeltaF[idx] = frames[h]->data->get_state_minus_stateZero().head<8>().cast<float>().transpose() * adHostF[idx] + frames[t]->data->get_state_minus_stateZero().head<8>().cast<float>().transpose() * adTargetF[idx];
+				//; 这个地方好像是利用两帧之间的相对状态的增量 * 相对状态对绝对状态的雅克比 = 绝对状态的增量，
+				//; 然后把两个相对帧的 绝对状态的增量加在一起？
+				adHTdeltaF[idx] = 
+					frames[h]->data->get_state_minus_stateZero().head<8>().cast<float>().transpose() * 
+					adHostF[idx]   //; adHostF是伴随矩阵，即相对状态 对 host帧的雅克比
+					+ 
+					frames[t]->data->get_state_minus_stateZero().head<8>().cast<float>().transpose() * 
+					adTargetF[idx];  //; adTargetF是伴随矩阵，即相对状态 对 Target帧的雅克比
 			}
-
+		}
 		cDeltaF = HCalib->value_minus_value_zero.cast<float>(); // 相机内参增量
 
+		//! 靠，到底在算什么东西啊？？？
 		for (EFFrame *f : frames)
 		{
 			f->delta = f->data->get_state_minus_stateZero().head<8>();					 // 帧位姿增量
 			f->delta_prior = (f->data->get_state() - f->data->getPriorZero()).head<8>(); // 先验增量
 
 			for (EFPoint *p : f->points)
+			{
 				p->deltaF = p->data->idepth - p->data->idepth_zero; // 逆深度的增量
+			}
 		}
 
 		EFDeltaValid = true;
@@ -214,6 +258,15 @@ namespace dso
 
 	// accumulates & shifts L.
 	//@ 计算能量方程内帧点构成的 正规方程
+	/**
+	 * @brief 这里计算滑窗内所有帧和点构成的正规方程中，H矩阵关于状态的部分，即H_XX（或深蓝PPT中的U）
+	 *	 注意滑窗中维护8个关键帧，每个关键帧的状态x是6维位姿+2维光度=8维，同时还会优化相机内参K的4个系数（fx fy cx cy）
+	 *   所以最后滑窗中总的X状态是8*8+4=68维
+	 *  参考博客：https://www.cnblogs.com/JingeTU/p/8306727.html
+	 * @param[in] H 
+	 * @param[in] b 
+	 * @param[in] MT 
+	 */
 	void EnergyFunctional::accumulateAF_MT(MatXX &H, VecX &b, bool MT)
 	{
 		if (MT)
@@ -240,6 +293,13 @@ namespace dso
 
 	//@ 计算 H 和 b , 加先验, res是减去线性化残差
 	// accumulates & shifts L.
+	/**
+	 * @brief 这里计算滑窗内所有帧和点构成的正规方程中，b关于状态的部分，即b_XX，也就是J*r（或深蓝PPT中的b_A）
+	 * 
+	 * @param[in] H 
+	 * @param[in] b 
+	 * @param[in] MT 
+	 */
 	void EnergyFunctional::accumulateLF_MT(MatXX &H, VecX &b, bool MT)
 	{
 		if (MT)
@@ -263,6 +323,14 @@ namespace dso
 	}
 
 	//@ 计算边缘化掉逆深度的Schur complement部分
+	/**
+	 * @brief   这里计算滑窗内所有帧和点构成的正规方程中，H矩阵中关于状态X的舒尔补部分， 即深蓝PPT中的
+	 *    W * V^-1 * W.T。 以及b中关于状态X的舒尔补部分，即深蓝PPT中的 W * V^-1 * b_B
+	 * 
+	 * @param[in] H 
+	 * @param[in] b 
+	 * @param[in] MT 
+	 */
 	void EnergyFunctional::accumulateSCF_MT(MatXX &H, VecX &b, bool MT)
 	{
 		if (MT)
@@ -461,6 +529,15 @@ namespace dso
 	}
 
 	//@ 向能量函数中增加一帧, 进行的操作: 改变正规方程, 重新排ID, 共视关系
+	/**
+	 * @brief 把普通帧插入滑窗中的能量帧中
+	 *    操作：1.改变正规方程：这个是不对的，准确的说是计算了两帧之间的相对状态对两帧各自的绝对状态的雅克比
+	 *         2.重新记录ID，包括EFFrame/EFPoint/EFResidual的ID
+	 *         3.记录共视关系
+	 * @param[in] fh 
+	 * @param[in] Hcalib 
+	 * @return EFFrame* 
+	 */
 	EFFrame *EnergyFunctional::insertFrame(FrameHessian *fh, CalibHessian *Hcalib)
 	{
 		// 建立优化用的能量函数帧. 并加进能量函数frames中
@@ -486,21 +563,38 @@ namespace dso
 		EFAdjointsValid = false;
 		EFDeltaValid = false;
 
-		setAdjointsF(Hcalib); // 对相机内参设置伴随矩阵
+		//; 计算伴随矩阵：注意这个是为了求残差对ij帧的绝对位姿来的，因为之前算的都是残差对相对位姿
+		setAdjointsF(Hcalib); 
+		//; 重新设置滑窗中的EFFrame、EFPoints、EFResidual的ID号
 		makeIDX();			  // 设置ID
 
+		//; 再遍历滑窗中的所有EFFrame, 添加ID号和数目？
+		//! 疑问：没看懂这里在搞什么操作
+		//! 暂时的解答：看上面说的，这里应该是在记录共视关系？
 		for (EFFrame *fh2 : frames)
 		{
 			// 前32位是host帧的历史ID, 后32位是Target的历史ID
-			connectivityMap[(((uint64_t)eff->frameID) << 32) + ((uint64_t)fh2->frameID)] = Eigen::Vector2i(0, 0);
+			connectivityMap[(((uint64_t)eff->frameID) << 32) + ((uint64_t)fh2->frameID)] = 
+				Eigen::Vector2i(0, 0);
 			if (fh2 != eff)
-				connectivityMap[(((uint64_t)fh2->frameID) << 32) + ((uint64_t)eff->frameID)] = Eigen::Vector2i(0, 0);
+			{
+				connectivityMap[(((uint64_t)fh2->frameID) << 32) + ((uint64_t)eff->frameID)] = 
+					Eigen::Vector2i(0, 0);
+			}
+				
 		}
 
 		return eff;
 	}
 
 	//@ 向能量函数中插入一个点, 放入对应的EFframe
+	/**
+	 * @brief 在insertPoint()中会生成PointHessian类型点的ph的EFPoint类型的efp，efp包含点ph以及其主导帧host。
+	 *       按照push_back的先后顺序对idxInPoints进行编号， nPoints表示后端优化中点的数量。
+	 * 
+	 * @param[in] ph 
+	 * @return EFPoint* 
+	 */
 	EFPoint *EnergyFunctional::insertPoint(PointHessian *ph)
 	{
 		EFPoint *efp = new EFPoint(ph, ph->host->efFrame);
@@ -1038,23 +1132,31 @@ namespace dso
 	void EnergyFunctional::makeIDX()
 	{
 		// 重新赋值ID
+		//; frames是类的成员变量，一个vector，存储所有能量函数帧
 		for (unsigned int idx = 0; idx < frames.size(); idx++)
-			frames[idx]->idx = idx;
+		{
+			frames[idx]->idx = idx;  //; 重新赋值idx，变成在vector中存储的id
+		}
 
+		//; allPoints是类成员变量，一个vector, 存储所有计算能量函数的点
 		allPoints.clear();
 
 		for (EFFrame *f : frames)
+		{
 			for (EFPoint *p : f->points)
 			{
+				//; 遍历所有帧，遍历帧上的所有点，存储到allPoints中
 				allPoints.push_back(p);
 				// 残差的ID号
 				for (EFResidual *r : p->residualsAll)
 				{
+					// 残差的主导帧索引，等于这个残差的主导帧在EFFrmae中的索引
 					r->hostIDX = r->host->idx; // EFFrame的idx
+					// 残差的目标帧索引 同理
 					r->targetIDX = r->target->idx;
 				}
 			}
-
+		}
 		EFIndicesValid = true;
 	}
 
@@ -1067,5 +1169,4 @@ namespace dso
 			d.segment<8>(CPARS + 8 * h) = frames[h]->delta;
 		return d;
 	}
-
 }

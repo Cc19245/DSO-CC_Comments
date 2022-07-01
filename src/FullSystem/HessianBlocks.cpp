@@ -225,6 +225,7 @@ namespace dso
 	}
 
 	//@ 计算优化前和优化后的相对位姿, 相对光度变化, 及中间变量
+	//! 疑问：没看懂这个部分在干什么？？
 	void FrameFramePrecalc::set(FrameHessian *host, FrameHessian *target, CalibHessian *HCalib)
 	{
 		this->host = host; // 这个是赋值, 计数会增加, 不是拷贝
@@ -257,5 +258,4 @@ namespace dso
 		PRE_aff_mode = AffLight::fromToVecExposure(host->ab_exposure, target->ab_exposure, host->aff_g2l(), target->aff_g2l()).cast<float>();
 		PRE_b0_mode = host->aff_g2l_0().b;
 	}
-
 }

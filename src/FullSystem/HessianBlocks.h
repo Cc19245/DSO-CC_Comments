@@ -54,6 +54,7 @@ namespace dso
 	class EFPoint;
 
 //? 这是干什么用的? 是为了求解时候的数值稳定?
+//; 注意这部分的缩放系数，是在求伴随矩阵的时候使用的，也就是相对状态对绝对状态的雅克比的时候使用的
 #define SCALE_IDEPTH 1.0f	//!< 逆深度的比例系数  // scales internal value to idepth.
 #define SCALE_XI_ROT 1.0f	//!< 旋转量(so3)的比例系数
 #define SCALE_XI_TRANS 0.5f //!< 平移量的比例系数, 尺度?
@@ -451,7 +452,7 @@ namespace dso
 		inline void setIdepthScaled(float idepth_scaled)
 		{
 			this->idepth = SCALE_IDEPTH_INVERSE * idepth_scaled;
-			this->idepth_scaled = idepth_scaled;
+			this->idepth_scaled = idepth_scaled;  //; 记录点的逆深度的尺度缩放系数
 		}
 		inline void setIdepthZero(float idepth)
 		{

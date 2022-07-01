@@ -42,7 +42,6 @@
 
 namespace dso
 {
-
 	CoarseInitializer::CoarseInitializer(int ww, int hh) : thisToNext_aff(0, 0), thisToNext(SE3())
 	{
 		for (int lvl = 0; lvl < pyrLevelsUsed; lvl++)
@@ -1148,7 +1147,6 @@ namespace dso
 	 */
 	void CoarseInitializer::doStep(int lvl, float lambda, Vec8f inc)
 	{
-
 		const float maxPixelStep = 0.25;
 		const float idMaxStep = 1e10;
 		Pnt *pts = points[lvl];

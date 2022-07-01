@@ -1117,5 +1117,4 @@ namespace dso
 			cyi[level] = Ki[level](1, 2);
 		}
 	}
-
 }

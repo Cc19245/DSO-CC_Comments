@@ -29,7 +29,6 @@
 
 namespace dso
 {
-
 	void AccumulatedSCHessianSSE::addPoint(EFPoint *p, bool shiftPriorToZero, int tid)
 	{
 		int ngoodres = 0;

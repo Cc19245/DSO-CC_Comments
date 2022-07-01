@@ -52,9 +52,11 @@ namespace dso
 			// 梯度矩阵[dx*2, dxdy; dydx, dy^2]
 			gradH += ptc.tail<2>() * ptc.tail<2>().transpose();
 			//! 点的权重 c^2 / ( c^2 + ||grad||^2 )
+			//; 注意：这里才是真正在利用点的梯度给这个点赋值权重！
 			weights[idx] = sqrtf(setting_outlierTHSumComponent / (setting_outlierTHSumComponent + ptc.tail<2>().squaredNorm()));
 		}
-
+		
+		//; 这是啥玩意啊？
 		energyTH = patternNum * setting_outlierTH;
 		energyTH *= setting_overallEnergyTHWeight * setting_overallEnergyTHWeight;
 
@@ -67,11 +69,11 @@ namespace dso
 	}
 
 	/* 
- * returns
- * * OOB -> point is optimized and marginalized
- * * UPDATED -> point has been updated.
- * * SKIP -> point has not been updated.
- */
+	* returns
+	* * OOB -> point is optimized and marginalized
+	* * UPDATED -> point has been updated.
+	* * SKIP -> point has not been updated.
+	*/
 	//@ 使用深度滤波对未成熟点进行深度估计
 	ImmaturePointStatus ImmaturePoint::traceOn(FrameHessian *frame, const Mat33f &hostToFrame_KRKi, const Vec3f &hostToFrame_Kt, const Vec2f &hostToFrame_affine, CalibHessian *HCalib, bool debugPrint)
 	{
@@ -579,5 +581,4 @@ namespace dso
 		tmpRes->state_NewEnergy = energyLeft;
 		return energyLeft;
 	}
-
 }

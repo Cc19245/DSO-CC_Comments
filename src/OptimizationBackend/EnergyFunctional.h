@@ -129,6 +129,7 @@ namespace dso
 		Mat88 *adHost; //!< 伴随矩阵, double
 		Mat88 *adTarget;
 
+		//; 伴随矩阵部分，就是求 相对状态 对 绝对状态的雅克比
 		Mat88f *adHostF; //!< 伴随矩阵, float
 		Mat88f *adTargetF;
 
