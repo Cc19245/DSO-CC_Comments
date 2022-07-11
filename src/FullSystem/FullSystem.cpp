@@ -872,6 +872,8 @@ namespace dso
 			if (coarseTracker_forNewKF->refFrameID > coarseTracker->refFrameID)
 			{
 				// 交换参考帧和当前帧的coarseTracker
+                //; 定义了两个coarseTracker对象，主要是别的线程中对coarseTracker中的内容有修改，所以为了
+                //; 方便多线程操作，这里直接就在定义一个对象，然后交换对象
 				boost::unique_lock<boost::mutex> crlock(coarseTrackerSwapMutex);
 				CoarseTracker *tmp = coarseTracker;
 				coarseTracker = coarseTracker_forNewKF;
