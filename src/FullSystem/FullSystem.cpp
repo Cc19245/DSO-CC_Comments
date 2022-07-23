@@ -499,12 +499,17 @@ namespace dso
 	}
 
 
-	//@ 利用新的帧 fh 对关键帧中的ImmaturePoint进行更新
+    /**
+     * @brief  利用新的帧 fh 对关键帧中的ImmaturePoint进行更新
+     * 
+     * @param[in] fh 传入的新帧
+     */
 	void FullSystem::traceNewCoarse(FrameHessian *fh)
 	{
 		boost::unique_lock<boost::mutex> lock(mapMutex);
 
-		int trace_total = 0, trace_good = 0, trace_oob = 0, trace_out = 0, trace_skip = 0, trace_badcondition = 0, trace_uninitialized = 0;
+		int trace_total = 0, trace_good = 0, trace_oob = 0, trace_out = 0, 
+            trace_skip = 0, trace_badcondition = 0, trace_uninitialized = 0;
 
 		Mat33f K = Mat33f::Identity();
 		K(0, 0) = Hcalib.fxl();
@@ -515,16 +520,19 @@ namespace dso
 		// 遍历关键帧
 		for (FrameHessian *host : frameHessians) // go through all active frames
 		{
-
+            //; 当前帧到host关键帧的 位姿 变换关系
 			SE3 hostToNew = fh->PRE_worldToCam * host->PRE_camToWorld;
 			Mat33f KRKi = K * hostToNew.rotationMatrix().cast<float>() * K.inverse();
 			Vec3f Kt = K * hostToNew.translation().cast<float>();
-
+            //; 当前帧到host关键帧的 光度 变换关系
 			Vec2f aff = AffLight::fromToVecExposure(host->ab_exposure, fh->ab_exposure, host->aff_g2l(), fh->aff_g2l()).cast<float>();
 
+            //; 遍历host关键帧中所有的未成熟点进行极线搜索
 			for (ImmaturePoint *ph : host->immaturePoints)
 			{
+                // 极线搜索    
 				ph->traceOn(fh, KRKi, Kt, aff, &Hcalib, false);
+
 				if (ph->lastTraceStatus == ImmaturePointStatus::IPS_GOOD)
 					trace_good++;
 				if (ph->lastTraceStatus == ImmaturePointStatus::IPS_BADCONDITION)
@@ -540,14 +548,6 @@ namespace dso
 				trace_total++;
 			}
 		}
-		//	printf("ADD: TRACE: %'d points. %'d (%.0f%%) good. %'d (%.0f%%) skip. %'d (%.0f%%) badcond. %'d (%.0f%%) oob. %'d (%.0f%%) out. %'d (%.0f%%) uninit.\n",
-		//			trace_total,
-		//			trace_good, 100*trace_good/(float)trace_total,
-		//			trace_skip, 100*trace_skip/(float)trace_total,
-		//			trace_badcondition, 100*trace_badcondition/(float)trace_total,
-		//			trace_oob, 100*trace_oob/(float)trace_total,
-		//			trace_out, 100*trace_out/(float)trace_total,
-		//			trace_uninitialized, 100*trace_uninitialized/(float)trace_total);
 	}
 
 	//@ 处理挑选出来待激活的点
@@ -927,11 +927,13 @@ namespace dso
 
 			// Step 6  判断是否插入关键帧
 			bool needToMakeKF = false;
+            //; 如果设置了没隔几帧插入一个关键帧
 			if (setting_keyframesPerSecond > 0) // 每隔多久插入关键帧
 			{
 				needToMakeKF = allFrameHistory.size() == 1 ||
 					(fh->shell->timestamp - allKeyFramesHistory.back()->timestamp) > 0.95f / setting_keyframesPerSecond;
 			}
+            //; 正常是这种情况，也就是根据运行状态自行判断是否要插入关键帧
 			else
 			{
 				Vec2 refToFh = AffLight::fromToVecExposure(coarseTracker->lastRef->ab_exposure, fh->ab_exposure,
@@ -939,12 +941,16 @@ namespace dso
 
 				// BRIGHTNESS CHECK
 				needToMakeKF = allFrameHistory.size() == 1 ||
-					setting_kfGlobalWeight * setting_maxShiftWeightT * sqrtf((double)tres[1]) / (wG[0] + hG[0]) +		  // 平移像素位移
-					setting_kfGlobalWeight * setting_maxShiftWeightR * sqrtf((double)tres[2]) / (wG[0] + hG[0]) +  //TODO 旋转像素位移, 设置为0???
-					setting_kfGlobalWeight * setting_maxShiftWeightRT * sqrtf((double)tres[3]) / (wG[0] + hG[0]) + // 旋转+平移像素位移
-					setting_kfGlobalWeight * setting_maxAffineWeight * fabs(logf((float)refToFh[0])) >
-					1 ||										 // 光度变化大
-					2 * coarseTracker->firstCoarseRMSE < tres[0]; // 误差能量变化太大(最初的两倍)
+                    // 平移像素位移
+					setting_kfGlobalWeight * setting_maxShiftWeightT * sqrtf((double)tres[1]) / (wG[0] + hG[0]) +		  
+                    //TODO 旋转像素位移, 设置为0???
+					setting_kfGlobalWeight * setting_maxShiftWeightR * sqrtf((double)tres[2]) / (wG[0] + hG[0]) +  
+                    // 旋转+平移像素位移
+					setting_kfGlobalWeight * setting_maxShiftWeightRT * sqrtf((double)tres[3]) / (wG[0] + hG[0]) + 
+					// 光度变化大
+                    setting_kfGlobalWeight * setting_maxAffineWeight * fabs(logf((float)refToFh[0])) > 1 ||		
+                    // 误差能量变化太大(最初的两倍)								 
+					2 * coarseTracker->firstCoarseRMSE < tres[0]; 
 			}
 
 			for (IOWrap::Output3DWrapper *ow : outputWrapper)
@@ -952,16 +958,23 @@ namespace dso
 
 			// Step 7 把该帧发布出去
 			lock.unlock();
+            //; 根据当前帧是否是关键帧，把当前帧发布给建图线程
 			deliverTrackedFrame(fh, needToMakeKF);
 			return;
 		}
 	}
 
-	//@ 把跟踪的帧, 给到建图线程, 设置成关键帧或非关键帧
+
+    /**
+     * @brief 把跟踪的帧, 给到建图线程, 设置成关键帧或非关键帧
+     *   本函数的参考博客：https://blog.csdn.net/xxxlinttp/article/details/90640350?spm=1001.2014.3001.5502
+     * @param[in] fh  当期帧
+     * @param[in] needKF  是否是关键帧的标志
+     */
 	void FullSystem::deliverTrackedFrame(FrameHessian *fh, bool needKF)
 	{
 		//! 顺序执行
-		//; 这里linearizeOperation是 是否强制实时执行的标志，如果是true，那么不强制实时执行
+		//; 这里linearizeOperation是 是否强制实时执行的标志，如果是true，那么不强制实时执行，也就是正常顺序执行即可
 		if (linearizeOperation)
 		{
 			if (goStepByStep && lastRefStopID != coarseTracker->refFrameID)
@@ -986,6 +999,7 @@ namespace dso
 			else
 				makeNonKeyFrame(fh);
 		}
+        //; 否则要强制实时执行
 		else
 		{
 			boost::unique_lock<boost::mutex> lock(trackMapSyncMutex); // 跟踪和建图同步锁
@@ -1084,7 +1098,14 @@ namespace dso
 		mappingThread.join();
 	}
 
+
 	//@ 设置成非关键帧
+    /**
+     * @brief  当前帧被认为是非关键帧，那么该帧就用来对活动窗口中所有的关键帧中还未成熟的点进行逆深度更新。
+     *    基本原理是沿着极线进行搜索ImmaturePoint::traceOn。
+     * 
+     * @param[in] fh  传入的当前帧
+     */
 	void FullSystem::makeNonKeyFrame(FrameHessian *fh)
 	{
 		// needs to be set by mapping thread. no lock required since we are in mapping thread.
@@ -1100,6 +1121,7 @@ namespace dso
 		traceNewCoarse(fh); // 更新未成熟点(深度未收敛的点)
 		delete fh;
 	}
+
 
 	//@ 生成关键帧, 优化, 激活点, 提取点, 边缘化关键帧
 	/**

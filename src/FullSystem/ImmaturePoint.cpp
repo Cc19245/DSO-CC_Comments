@@ -68,6 +68,7 @@ namespace dso
 	{
 	}
 
+
 	/* 
 	* returns
 	* * OOB -> point is optimized and marginalized
@@ -75,6 +76,19 @@ namespace dso
 	* * SKIP -> point has not been updated.
 	*/
 	//@ 使用深度滤波对未成熟点进行深度估计
+    /**
+     * @brief 使用当前帧对关键帧中未成熟的点沿极线搜索进行深度滤波
+     *  参考博客：https://blog.csdn.net/xxxlinttp/article/details/90640350?spm=1001.2014.3001.5502
+     *          https://blog.csdn.net/gbz3300255/article/details/109635712
+     * 
+     * @param[in] frame 
+     * @param[in] hostToFrame_KRKi 
+     * @param[in] hostToFrame_Kt 
+     * @param[in] hostToFrame_affine 
+     * @param[in] HCalib 
+     * @param[in] debugPrint 
+     * @return ImmaturePointStatus 
+     */
 	ImmaturePointStatus ImmaturePoint::traceOn(FrameHessian *frame, const Mat33f &hostToFrame_KRKi, const Vec3f &hostToFrame_Kt, const Vec2f &hostToFrame_affine, CalibHessian *HCalib, bool debugPrint)
 	{
 		if (lastTraceStatus == ImmaturePointStatus::IPS_OOB)
@@ -443,6 +457,7 @@ namespace dso
 		lastTraceUV = Vec2f(bestU, bestV);						// 上一次得到的最有位置
 		return lastTraceStatus = ImmaturePointStatus::IPS_GOOD; //上一次的位置
 	}
+
 
 	float ImmaturePoint::getdPixdd(
 		CalibHessian *HCalib,
