@@ -501,7 +501,8 @@ namespace dso
 
     /**
      * @brief  利用新的帧 fh 对关键帧中的ImmaturePoint进行更新
-     * 
+     *   做法很简单，就是遍历所有关键帧中的所有未成熟点，然后在当前帧中寻找这些未成熟点的投影匹配点，如果
+     *   匹配成功，那么就可以利用本帧的投影匹配点对未成熟点的逆深度范围进行更新，也就是逆深度滤波
      * @param[in] fh 传入的新帧
      */
 	void FullSystem::traceNewCoarse(FrameHessian *fh)
@@ -530,7 +531,7 @@ namespace dso
             //; 遍历host关键帧中所有的未成熟点进行极线搜索
 			for (ImmaturePoint *ph : host->immaturePoints)
 			{
-                // 极线搜索    
+                // 极线搜索，在当前帧中匹配未成熟点，如果匹配成功，则利用当前帧的观测跟新未成熟点的逆深度范围    
 				ph->traceOn(fh, KRKi, Kt, aff, &Hcalib, false);
 
 				if (ph->lastTraceStatus == ImmaturePointStatus::IPS_GOOD)
@@ -550,6 +551,7 @@ namespace dso
 		}
 	}
 
+
 	//@ 处理挑选出来待激活的点
 	void FullSystem::activatePointsMT_Reductor(
 		std::vector<PointHessian *> *optimized,
@@ -567,9 +569,10 @@ namespace dso
 	//@ 激活未成熟点, 加入优化
 	void FullSystem::activatePointsMT()
 	{
-		//[ ***step 1*** ] 阈值计算, 通过距离地图来控制数目
+		// Step 1 阈值计算, 通过距离地图来控制数目
 		//currentMinActDist 初值为 2
 		//* 这太牛逼了.....参数
+        //; 下面这些参数都是实际工程中调出来的，也是玄学
 		if (ef->nPoints < setting_desiredPointDensity * 0.66)
 			currentMinActDist -= 0.8;
 		if (ef->nPoints < setting_desiredPointDensity * 0.8)
@@ -597,10 +600,12 @@ namespace dso
 			printf("SPARSITY:  MinActDist %f (need %d points, have %d points)!\n",
 				   currentMinActDist, (int)(setting_desiredPointDensity), ef->nPoints);
 
+        //; 取出最新的关键帧
 		FrameHessian *newestHs = frameHessians.back();
 
 		// make dist map.
-		coarseDistanceMap->makeK(&Hcalib);
+		coarseDistanceMap->makeK(&Hcalib);  //; 取出相机内参
+        // Step 2 把所有关键帧上的未成熟点投影到最新的关键帧上，生成距离地图
 		coarseDistanceMap->makeDistanceMap(frameHessians, newestHs);
 
 		//coarseTracker->debugPlotDistMap("distMap");
@@ -608,7 +613,7 @@ namespace dso
 		std::vector<ImmaturePoint *> toOptimize;
 		toOptimize.reserve(20000); // 待激活的点
 
-		//[ ***step 2*** ] 处理未成熟点, 激活/删除/跳过
+		// Step 3 处理未成熟点, 激活/删除/跳过
 		for (FrameHessian *host : frameHessians) // go through all active frames
 		{
 			if (host == newestHs)
@@ -679,7 +684,8 @@ namespace dso
 
 		//	printf("ACTIVATE: %d. (del %d, notReady %d, marg %d, good %d, marg-skip %d)\n",
 		//			(int)toOptimize.size(), immature_deleted, immature_notReady, immature_needMarg, immature_want, immature_margskip);
-		//[ ***step 3*** ] 优化上一步挑出来的未成熟点, 进行逆深度优化, 并得到pointhessian
+		
+        // Step 4 优化上一步挑出来的未成熟点, 进行逆深度优化, 并得到pointhessian
 		std::vector<PointHessian *> optimized;
 		optimized.resize(toOptimize.size());
 
@@ -689,7 +695,7 @@ namespace dso
 		else
 			activatePointsMT_Reductor(&optimized, &toOptimize, 0, toOptimize.size(), 0, 0);
 
-		//[ ***step 4*** ] 把PointHessian加入到能量函数, 删除收敛的未成熟点, 或不好的点
+		// Step 5 把PointHessian加入到能量函数, 删除收敛的未成熟点, 或不好的点
 		for (unsigned k = 0; k < toOptimize.size(); k++)
 		{
 			PointHessian *newpoint = optimized[k];
@@ -717,7 +723,7 @@ namespace dso
 			}
 		}
 
-		//[ ***step 5*** ] 把删除的点丢掉
+		// Step 6 把删除的点丢掉
 		for (FrameHessian *host : frameHessians)
 		{
 			for (int i = 0; i < (int)host->immaturePoints.size(); i++)
@@ -732,6 +738,7 @@ namespace dso
 			}
 		}
 	}
+
 
 	void FullSystem::activatePointsOldFirst()
 	{
@@ -1123,15 +1130,13 @@ namespace dso
 	}
 
 
-	//@ 生成关键帧, 优化, 激活点, 提取点, 边缘化关键帧
 	/**
 	 * @brief 传入一个FrameHessian，由它生成关键帧
-	 * 
+     *   //@ 生成关键帧, 优化, 激活点, 提取点, 边缘化关键帧
 	 * @param[in] fh 
 	 */
 	void FullSystem::makeKeyFrame(FrameHessian *fh)
 	{
-
 		// Step 1  设置当前估计的fh的位姿, 光度参数
 		// needs to be set by mapping thread
 		{ // 同样取出位姿, 当前的作为最终值
@@ -1142,7 +1147,7 @@ namespace dso
 			fh->setEvalPT_scaled(fh->shell->camToWorld.inverse(), fh->shell->aff_g2l); // 待优化值
 		}
 
-		// Step 2  把这一帧来更新之前帧的未成熟点
+		// Step 2  用这一帧来更新之前帧的未成熟点（和非关键帧的操作一样）
 		traceNewCoarse(fh); // 更新未成熟点(深度未收敛的点)
 
 		boost::unique_lock<boost::mutex> lock(mapMutex); // 建图锁
@@ -1151,7 +1156,7 @@ namespace dso
 		// =========================== Flag Frames to be Marginalized. =========================
 		flagFramesForMarginalization(fh); // TODO 这里没用最新帧，可以改进下
 
-		// Step 4  加入到关键帧序列
+		// Step 4  把当前帧加入到关键帧序列
 		// =========================== add New Frame to Hessian Struct. =========================
 		fh->idx = frameHessians.size();
 		frameHessians.push_back(fh);
@@ -1181,13 +1186,14 @@ namespace dso
 		}
 
 		// Step 6  激活所有关键帧上的部分未成熟点(构造新的残差)
+        //; 因为在前面几帧都对滑窗中关键帧的未成熟点进行了观测（逆深度滤波），因此肯定有一部分未成熟点的逆深度收敛了，
+        //; 可以成为地图点了，因此这里就把这些点激活，把他们从未成熟点构造成地图点
 		// =========================== Activate Points (& flag for marginalization). =========================
 		activatePointsMT();
 		ef->makeIDX(); // ? 为啥要重新设置ID呢, 是因为加新的帧了么
 
 		// Step 7  对滑窗内的关键帧进行优化(说的轻松, 里面好多问题)
 		// =========================== OPTIMIZE ALL =========================
-
 		fh->frameEnergyTH = frameHessians.back()->frameEnergyTH; // 这两个不是一个值么???
 		float rmse = optimize(setting_maxOptIterations);
 
@@ -1211,7 +1217,6 @@ namespace dso
 				initFailed = true;
 			}
 		}
-
 		if (isLost)
 			return; // 优化后的能量函数太大, 认为是跟丢了
 
@@ -1265,6 +1270,7 @@ namespace dso
 		printLogLine();
 		//printEigenValLine();
 	}
+
 
 	//@ 从初始化中提取出信息, 用于跟踪.
 	/**

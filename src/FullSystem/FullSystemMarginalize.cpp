@@ -51,8 +51,11 @@
 
 namespace dso
 {
-
-	//@ 对于关键帧的边缘化策略 1. 活跃点只剩下5%的; 2. 和最新关键帧曝光变化大于0.7; 3. 距离最远的关键帧
+    /**
+     * @brief 对于关键帧的边缘化策略 1.活跃点只剩下5%的;  2.和最新关键帧曝光变化大于0.7;  3.距离最远的关键帧
+     * 
+     * @param[in] newFH 传入的当前最新的帧，也是即将成为关键帧的那一帧
+     */
 	void FullSystem::flagFramesForMarginalization(FrameHessian *newFH)
 	{
 		//? 怎么会有这种情况呢?
