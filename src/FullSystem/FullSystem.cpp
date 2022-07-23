@@ -272,25 +272,38 @@ namespace dso
 		myfile.close();
 	}
 
-	//@ 使用确定的运动模型对新来的一帧进行跟踪, 得到位姿和光度参数
+ 
+    /**  
+     * @brief 这是前端跟踪的唯一函数：传入最新的一帧图像，对上一帧进行跟踪
+     * 	//@ 使用确定的运动模型对新来的一帧进行跟踪, 得到位姿和光度参数
+     *  对于本函数讲解的非常好的博客：https://blog.csdn.net/wubaobao1993/article/details/104022702
+     * @param[in] fh  传入的当前帧图像
+     * @return Vec4 
+     */
 	Vec4 FullSystem::trackNewCoarse(FrameHessian *fh)
 	{
-
 		assert(allFrameHistory.size() > 0);
 		// set pose initialization.
 
 		for (IOWrap::Output3DWrapper *ow : outputWrapper)
 			ow->pushLiveFrame(fh);
 
+        //; 获取参考帧的信息
 		FrameHessian *lastF = coarseTracker->lastRef; // 参考帧
-
 		AffLight aff_last_2_l = AffLight(0, 0);
-		//[ ***step 1*** ] 设置不同的运动状态
+
+		// Step 1. 设置不同的运动状态的估计
 		std::vector<SE3, Eigen::aligned_allocator<SE3>> lastF_2_fh_tries;
 		printf("size: %d \n", lastF_2_fh_tries.size());
+        //; 如果历史关键帧数量只有两帧，则设置所有的相对位姿为单位阵
+        //! 疑问：为啥？？？
 		if (allFrameHistory.size() == 2)
-			for (unsigned int i = 0; i < lastF_2_fh_tries.size(); i++)
-				lastF_2_fh_tries.push_back(SE3()); //? 这个size()不应该是0么
+        {
+            for (unsigned int i = 0; i < lastF_2_fh_tries.size(); i++)
+			{
+                lastF_2_fh_tries.push_back(SE3()); //? 这个size()不应该是0么
+            }
+        }	
 		else
 		{
 			FrameShell *slast = allFrameHistory[allFrameHistory.size() - 2];	// 上一帧
@@ -299,24 +312,34 @@ namespace dso
 			SE3 lastF_2_slast;
 			{ // lock on global pose consistency!
 				boost::unique_lock<boost::mutex> crlock(shellPoseMutex);
+                //; 注意：这里有参考帧和上一帧的区别，感觉就是关键帧和非关键帧之间的区别？
 				slast_2_sprelast = sprelast->camToWorld.inverse() * slast->camToWorld;	// 上一帧和大上一帧的运动
 				lastF_2_slast = slast->camToWorld.inverse() * lastF->shell->camToWorld; // 参考帧到上一帧运动
-				aff_last_2_l = slast->aff_g2l;
+				aff_last_2_l = slast->aff_g2l;  //; 上一帧的光度值
 			}
-			SE3 fh_2_slast = slast_2_sprelast; // assumed to be the same as fh_2_slast. // 当前帧到上一帧 = 上一帧和大上一帧的
+            // 当前帧到上一帧 = 上一帧和大上一帧的
+			SE3 fh_2_slast = slast_2_sprelast; // assumed to be the same as fh_2_slast. 
 
-			//! 尝试不同的运动
+			// 尝试不同的运动
 			// get last delta-movement.
+            //; 匀速模型：当前帧到上一帧 * 上一帧到上一个关键帧
 			lastF_2_fh_tries.push_back(fh_2_slast.inverse() * lastF_2_slast);						 // assume constant motion.
-			lastF_2_fh_tries.push_back(fh_2_slast.inverse() * fh_2_slast.inverse() * lastF_2_slast); // assume double motion (frame skipped)
-			lastF_2_fh_tries.push_back(SE3::exp(fh_2_slast.log() * 0.5).inverse() * lastF_2_slast);	 // assume half motion.
-			lastF_2_fh_tries.push_back(lastF_2_slast);												 // assume zero motion.
-			lastF_2_fh_tries.push_back(SE3());														 // assume zero motion FROM KF.
+			//; 倍速模型：当前帧到上一帧*当前帧到上一帧 * 上一帧到上一个关键帧
+            lastF_2_fh_tries.push_back(fh_2_slast.inverse() * fh_2_slast.inverse() * lastF_2_slast); // assume double motion (frame skipped)
+			//; 半速模型
+            lastF_2_fh_tries.push_back(SE3::exp(fh_2_slast.log() * 0.5).inverse() * lastF_2_slast);	 // assume half motion.
+			//; 零速模型：当前帧到上一帧为0，因此当前帧到上一个关键帧 = 上一帧到上一个关键帧
+            lastF_2_fh_tries.push_back(lastF_2_slast);												 // assume zero motion.
+			//; 不动模型(从参考帧静止)：因此当前帧到上一个关键帧的位姿就是单位阵
+            lastF_2_fh_tries.push_back(SE3());														 // assume zero motion FROM KF.
 
-			//! 尝试不同的旋转变动
+			// 尝试不同的旋转变动
+            //   只需尝试大量不同的初始化（所有旋转）。 最后，如果他们不工作，他们只会在最粗略的水平上进行尝试，
+            //    无论如何这都是超级快的。 另外，如果我们在这里的轨道松动，所以我们真的非常想避免这种情况。
 			// just try a TON of different initializations (all rotations). In the end,
 			// if they don't work they will only be tried on the coarsest level, which is super fast anyway.
 			// also, if tracking rails here we loose, so we really, really want to avoid that.
+            //; 下面又在匀速模型的基础上尝试了26种旋转运动，进一步扩大对运动模型的假设
 			for (float rotDelta = 0.02; rotDelta < 0.05; rotDelta++)
 			{
 				lastF_2_fh_tries.push_back(fh_2_slast.inverse() * lastF_2_slast * SE3(Sophus::Quaterniond(1, rotDelta, 0, 0), Vec3(0, 0, 0)));					// assume constant motion.
@@ -358,26 +381,26 @@ namespace dso
 		SE3 lastF_2_fh = SE3();
 		AffLight aff_g2l = AffLight(0, 0);
 
-		//! as long as maxResForImmediateAccept is not reached, I'll continue through the options.
-		//! I'll keep track of the so-far best achieved residual for each level in achievedRes.
-		//! 把到目前为止最好的残差值作为每一层的阈值
-		//! If on a coarse level, tracking is WORSE than achievedRes, we will not continue to save time.
-		//! 粗层的能量值大, 也不继续优化了, 来节省时间
+		// as long as maxResForImmediateAccept is not reached, I'll continue through the options.
+		// I'll keep track of the so-far best achieved residual for each level in achievedRes.
+		// 把到目前为止最好的残差值作为每一层的阈值
+		// If on a coarse level, tracking is WORSE than achievedRes, we will not continue to save time.
+		// 粗层的能量值大, 也不继续优化了, 来节省时间
 
 		Vec5 achievedRes = Vec5::Constant(NAN);
 		bool haveOneGood = false;
 		int tryIterations = 0;
-		//! 逐个尝试
+		// Step 2 遍历所有运动状态的估计，进行跟踪
 		for (unsigned int i = 0; i < lastF_2_fh_tries.size(); i++)
 		{
-			//[ ***step 2*** ] 尝试不同的运动状态, 得到跟踪是否良好
 			AffLight aff_g2l_this = aff_last_2_l; // 上一帧的赋值当前帧
 			SE3 lastF_2_fh_this = lastF_2_fh_tries[i];
 
+            // Step 2.1 使用此函数对当前帧估计的位姿进行跟踪，从金字塔最高层到最低层跟踪
 			bool trackingIsGood = coarseTracker->trackNewestCoarse(
-				fh, lastF_2_fh_this, aff_g2l_this,
-				pyrLevelsUsed - 1,
-				achievedRes); // in each level has to be at least as good as the last try.
+                    fh, lastF_2_fh_this, aff_g2l_this,
+                    pyrLevelsUsed - 1,
+                    achievedRes); // in each level has to be at least as good as the last try.
 			tryIterations++;
 
 			if (i != 0)
@@ -398,7 +421,7 @@ namespace dso
 					   coarseTracker->lastResiduals[4]);
 			}
 
-			//[ ***step 3*** ] 如果跟踪正常, 并且0层残差比最好的还好留下位姿, 保存最好的每一层的能量值
+			// Step 2.2 如果跟踪成功, 并且0层残差比之前达到的最好的估计结果还好，则留下这次的位姿, 并且保存最好的每一层的能量值
 			// do we have a new winner?
 			if (trackingIsGood && std::isfinite((float)coarseTracker->lastResiduals[0]) && !(coarseTracker->lastResiduals[0] >= achievedRes[0]))
 			{
@@ -406,7 +429,7 @@ namespace dso
 				flowVecs = coarseTracker->lastFlowIndicators;
 				aff_g2l = aff_g2l_this;
 				lastF_2_fh = lastF_2_fh_this;
-				haveOneGood = true;
+				haveOneGood = true;  //; 有一次跟踪比较好的结果了
 			}
 
 			// take over achieved res (always).
@@ -414,16 +437,24 @@ namespace dso
 			{
 				for (int i = 0; i < 5; i++)
 				{
-					if (!std::isfinite((float)achievedRes[i]) || achievedRes[i] > coarseTracker->lastResiduals[i]) // take over if achievedRes is either bigger or NAN.
-						achievedRes[i] = coarseTracker->lastResiduals[i];										   // 里面保存的是各层得到的能量值
+                    // take over if achievedRes is either bigger or NAN.
+					if (!std::isfinite((float)achievedRes[i]) || achievedRes[i] > coarseTracker->lastResiduals[i])
+                    {
+                        //; 各层最小的能量阈值更新
+                        achievedRes[i] = coarseTracker->lastResiduals[i];	// 里面保存的是各层得到的能量值
+                    }	
 				}
 			}
 
-			//[ ***step 4*** ] 小于阈值则暂停, 并且为下次设置阈值
+			// Step 2.3 第0层残差小于阈值，则本帧跟踪成功，其他运动猜测也都不用尝试了
+            // 如果当次的优化结果是上一帧结果的N倍之内，认为这就是最优的
+            //; 如果本次的金字塔第0层误差水平在  **上一帧**  的误差的1.5倍之内，那么就认为本次运动假设的跟踪就是最优的，可以退出了
 			if (haveOneGood && achievedRes[0] < lastCoarseRMSE[0] * setting_reTrackThreshold)
 				break;
 		}
 
+        // Step 3 最后，如果上面三个步骤都能如期运行，那么我们就已经跟踪上了前一个关键帧；
+        // Step    但是如果上面的步骤并没有给出一个很好的结果，那么算法将匀速假设作为最好的假设并设置为当前的位姿。
 		if (!haveOneGood)
 		{
 			printf("BIG ERROR! tracking failed entirely. Take predictred pose and hope we may somehow recover.\n");
@@ -432,10 +463,13 @@ namespace dso
 			lastF_2_fh = lastF_2_fh_tries[0];
 		}
 
+        //; 最后就是讲当前的误差水平更新为保存变量供之后的过程使用
 		//! 把这次得到的最好值给下次用来当阈值
 		lastCoarseRMSE = achievedRes;
 
-		//[ ***step 5*** ] 此时shell在跟踪阶段, 没人使用, 设置值
+
+		// Step 4 此时shell在跟踪阶段, 没人使用, 设置值
+        //; 本帧跟踪成功，把本帧加入到shell中
 		// no lock required, as fh is not used anywhere yet.
 		fh->shell->camToTrackingRef = lastF_2_fh.inverse();
 		fh->shell->trackingRef = lastF->shell;
@@ -463,6 +497,7 @@ namespace dso
 
 		return Vec4(achievedRes[0], flowVecs[0], flowVecs[1], flowVecs[2]);
 	}
+
 
 	//@ 利用新的帧 fh 对关键帧中的ImmaturePoint进行更新
 	void FullSystem::traceNewCoarse(FrameHessian *fh)
@@ -881,6 +916,7 @@ namespace dso
 			}
 
 			//TODO 使用旋转和位移对像素移动的作用比来判断运动状态
+            //! 重要：前端跟踪函数内容全在这里面
 			Vec4 tres = trackNewCoarse(fh);
 			if (!std::isfinite((double)tres[0]) || !std::isfinite((double)tres[1]) || !std::isfinite((double)tres[2]) || !std::isfinite((double)tres[3]))
 			{

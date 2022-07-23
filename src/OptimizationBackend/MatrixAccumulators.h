@@ -1291,7 +1291,22 @@ namespace dso
 			shiftUp(false);
 		}
 
-		// 带权重的9维向量得到9*9矩阵
+
+        /**
+         * @brief 传入雅克比矩阵(J0-J7)、残差(J8)、权重(w)，计算Hessian矩阵H=J'*w*J、b向量b=J'*w*e
+         *   // 带权重的9维向量得到9*9矩阵
+         * 注意：此函数在跟踪部分计算雅克比时调用，但是其做法和初始化的时候是一样的，所以可以参考深蓝PPT初始化部分
+         * @param[in] J0 
+         * @param[in] J1 
+         * @param[in] J2 
+         * @param[in] J3 
+         * @param[in] J4 
+         * @param[in] J5 
+         * @param[in] J6 
+         * @param[in] J7 
+         * @param[in] J8 
+         * @param[in] w 
+         */
 		inline void updateSSE_eighted(
 			const __m128 J0, const __m128 J1,
 			const __m128 J2, const __m128 J3,
@@ -1301,7 +1316,9 @@ namespace dso
 		{
 			float *pt = SSEData;
 
+            //; 先把w乘到J0上，后面的就不用每次计算都乘以J0了
 			__m128 J0w = _mm_mul_ps(J0, w);
+            // 先算第1行，9个值
 			_mm_store_ps(pt, _mm_add_ps(_mm_load_ps(pt), _mm_mul_ps(J0w, J0)));
 			pt += 4;
 			_mm_store_ps(pt, _mm_add_ps(_mm_load_ps(pt), _mm_mul_ps(J0w, J1)));
@@ -1321,6 +1338,7 @@ namespace dso
 			_mm_store_ps(pt, _mm_add_ps(_mm_load_ps(pt), _mm_mul_ps(J0w, J8)));
 			pt += 4;
 
+            // 算第2行，8个值
 			__m128 J1w = _mm_mul_ps(J1, w);
 			_mm_store_ps(pt, _mm_add_ps(_mm_load_ps(pt), _mm_mul_ps(J1w, J1)));
 			pt += 4;
@@ -1405,6 +1423,7 @@ namespace dso
 			_mm_store_ps(pt, _mm_add_ps(_mm_load_ps(pt), _mm_mul_ps(J7w, J8)));
 			pt += 4;
 
+            //; 一直算到最后一行，只有一个值
 			__m128 J8w = _mm_mul_ps(J8, w);
 			_mm_store_ps(pt, _mm_add_ps(_mm_load_ps(pt), _mm_mul_ps(J8w, J8)));
 			pt += 4;

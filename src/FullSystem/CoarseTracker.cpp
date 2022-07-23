@@ -339,13 +339,24 @@ namespace dso
 		}
 	}
 
-	//@ 对跟踪的最新帧和参考帧之间的残差, 求 Hessian 和 b
+
+    /**
+     * @brief 对跟踪的最新帧和参考帧之间的残差, 求 Hessian 和 b
+     * 
+     * @param[in] lvl  当前最新帧所在的金字塔层数
+     * @param[in] H_out   计算得到的H
+     * @param[in] b_out   计算得到的b
+     * @param[in] refToNew 当前最新帧到参考帧之间的位姿变化初值
+     * @param[in] aff_g2l  当前最新帧到参考帧之间的广度初值
+     */
 	void CoarseTracker::calcGSSSE(int lvl, Mat88 &H_out, Vec8 &b_out, const SE3 &refToNew, AffLight aff_g2l)
 	{
 		acc.initialize();
 
 		__m128 fxl = _mm_set1_ps(fx[lvl]);
 		__m128 fyl = _mm_set1_ps(fy[lvl]);
+        //; 这个是计算上一个参考关键帧的绝对广度系数？
+        //! 这个地方看深蓝的PPT，PPT中有写的对应的公式，其中a和b0部分明确标记出来了
 		__m128 b0 = _mm_set1_ps(lastRef_aff_g2l.b);
 		__m128 a = _mm_set1_ps((float)(AffLight::fromToVecExposure(lastRef->ab_exposure, newFrame->ab_exposure, lastRef_aff_g2l, aff_g2l)[0]));
 
@@ -353,38 +364,52 @@ namespace dso
 		__m128 minusOne = _mm_set1_ps(-1);
 		__m128 zero = _mm_set1_ps(0);
 
+        //; 注意这个变量就是判断必须是16字节对齐的，这样才可以使用SSE加速。而16字节对齐在上一步计算
+        //; 残差的最后已经手动补齐了，所以这里不会出现问题。
 		int n = buf_warped_n;
-		assert(n % 4 == 0);
+		assert(n % 4 == 0);  
+        //; 遍历所有的构造残差的点，128位一跳，也就是每次可以计算4个点的H和b，加速运算
 		for (int i = 0; i < n; i += 4)
 		{
-			__m128 dx = _mm_mul_ps(_mm_load_ps(buf_warped_dx + i), fxl); //! dx*fx
-			__m128 dy = _mm_mul_ps(_mm_load_ps(buf_warped_dy + i), fyl); //! dy*fy
+            //; 这里load_ps感觉应该是从某个变量开始，然后一次性取128位？也就是4个float
+			__m128 dx = _mm_mul_ps(_mm_load_ps(buf_warped_dx + i), fxl); // dx*fx
+			__m128 dy = _mm_mul_ps(_mm_load_ps(buf_warped_dy + i), fyl); // dy*fy
 			__m128 u = _mm_load_ps(buf_warped_u + i);
 			__m128 v = _mm_load_ps(buf_warped_v + i);
 			__m128 id = _mm_load_ps(buf_warped_idepth + i);
 
+            //! 重要：传入计算的雅克比J，利用updateSSE_eighted直接计算出来H和b
 			acc.updateSSE_eighted(
-				_mm_mul_ps(id, dx),																	// 对位移x导数
-				_mm_mul_ps(id, dy),																	// 对位移y导数
-				_mm_sub_ps(zero, _mm_mul_ps(id, _mm_add_ps(_mm_mul_ps(u, dx), _mm_mul_ps(v, dy)))), // 对位移z导数
-				_mm_sub_ps(zero, _mm_add_ps(
-									 _mm_mul_ps(_mm_mul_ps(u, v), dx),
-									 _mm_mul_ps(dy, _mm_add_ps(one, _mm_mul_ps(v, v))))), // 对旋转xi_1求导
-				_mm_add_ps(
+                //! 疑问：这里有点没看懂，按照深蓝PPT中，分母上还有Pz'啊？难道是Pz'=1?
+				_mm_mul_ps(id, dx),	    // 对位移x导数
+				_mm_mul_ps(id, dy),     // 对位移y导数
+                // 对位移z导数，对应PPT中公式是把-dpi提出来，然后再计算
+				_mm_sub_ps(zero, _mm_mul_ps(id, _mm_add_ps(_mm_mul_ps(u, dx), _mm_mul_ps(v, dy)))), 
+                // 对旋转xi_1求导
+				_mm_sub_ps(zero, _mm_add_ps(_mm_mul_ps(_mm_mul_ps(u, v), dx),
+									 _mm_mul_ps(dy, _mm_add_ps(one, _mm_mul_ps(v, v))))), 
+				// 对旋转xi_2求导
+                _mm_add_ps(
 					_mm_mul_ps(_mm_mul_ps(u, v), dy),
-					_mm_mul_ps(dx, _mm_add_ps(one, _mm_mul_ps(u, u)))),				 // 对旋转xi_2求导
-				_mm_sub_ps(_mm_mul_ps(u, dy), _mm_mul_ps(v, dx)),					 // 对旋转xi_3求导
-				_mm_mul_ps(a, _mm_sub_ps(b0, _mm_load_ps(buf_warped_refColor + i))), // 对目标帧a求导
-				minusOne,															 // 对目标帧b求导
-				_mm_load_ps(buf_warped_residual + i),								 // 残差
-				_mm_load_ps(buf_warped_weight + i));								 // huber权重
+					_mm_mul_ps(dx, _mm_add_ps(one, _mm_mul_ps(u, u)))),			
+                // 对旋转xi_3求导	
+				_mm_sub_ps(_mm_mul_ps(u, dy), _mm_mul_ps(v, dx)),		
+                // 对目标帧a求导			 
+				_mm_mul_ps(a, _mm_sub_ps(b0, _mm_load_ps(buf_warped_refColor + i))), 
+                // 对目标帧b求导
+				minusOne,															 
+				_mm_load_ps(buf_warped_residual + i),	// 残差
+				_mm_load_ps(buf_warped_weight + i)      // huber权重
+            );	
 		}
-
 		acc.finish();
+        //! 疑问： 取出H和b，这里为什么要/n呢？
 		H_out = acc.H.topLeftCorner<8, 8>().cast<double>() * (1.0f / n);
 		b_out = acc.H.topRightCorner<8, 1>().cast<double>() * (1.0f / n);
 
-		H_out.block<8, 3>(0, 0) *= SCALE_XI_ROT; // bug : 平移旋转顺序错了
+        //; 为了保证数值稳定性，还要对H和b的不同部位进行缩放
+        //! bug : 平移旋转顺序错了
+		H_out.block<8, 3>(0, 0) *= SCALE_XI_ROT; 
 		H_out.block<8, 3>(0, 3) *= SCALE_XI_TRANS;
 		H_out.block<8, 1>(0, 6) *= SCALE_A;
 		H_out.block<8, 1>(0, 7) *= SCALE_B;
@@ -398,8 +423,16 @@ namespace dso
 		b_out.segment<1>(7) *= SCALE_B;
 	}
 
-	//@ 计算当前位姿投影得到的残差(能量值), 并进行一些统计
-	//! 构造尽量多的点, 有助于跟踪
+
+    /**
+     * @brief 计算当前位姿投影得到的残差(能量值), 并进行一些统计
+     *      构造尽量多的点, 有助于跟踪
+     * @param[in] lvl  当前的金字塔层数
+     * @param[in] refToNew 当前帧初始位姿 
+     * @param[in] aff_g2l  当前帧初始光度值
+     * @param[in] cutoffTH ？？？
+     * @return Vec6 
+     */
 	Vec6 CoarseTracker::calcRes(int lvl, const SE3 &refToNew, AffLight aff_g2l, float cutoffTH)
 	{
 		float E = 0;
@@ -407,6 +440,7 @@ namespace dso
 		int numTermsInWarped = 0;
 		int numSaturated = 0;
 
+        //; 这一层图像宽高、图像梯度、相机内参
 		int wl = w[lvl];
 		int hl = h[lvl];
 		Eigen::Vector3f *dINewl = newFrame->dIp[lvl];
@@ -415,9 +449,11 @@ namespace dso
 		float cxl = cx[lvl];
 		float cyl = cy[lvl];
 
+        //; 旋转矩阵*内参
 		Mat33f RKi = (refToNew.rotationMatrix().cast<float>() * Ki[lvl]);
 		Vec3f t = (refToNew.translation()).cast<float>();
 		// 这个函数会把前后两帧的光度参数变成两个值
+        //; 这里应该就是刚开始学的时候讲的那个，把绝对的光度参数变成两帧之间的相对光度参数(a,b)
 		Vec2f affLL = AffLight::fromToVecExposure(lastRef->ab_exposure, newFrame->ab_exposure, lastRef_aff_g2l, aff_g2l).cast<float>();
 
 		float sumSquaredShiftT = 0;
@@ -441,13 +477,16 @@ namespace dso
 		float *lpc_idepth = pc_idepth[lvl];
 		float *lpc_color = pc_color[lvl];
 
+        // Step 1 遍历当前金字塔层上的所有点，计算残差和能量值
 		for (int i = 0; i < nl; i++)
 		{
+            //; 这个点的逆深度、这个点的xy坐标
 			float id = lpc_idepth[i];
 			float x = lpc_u[i];
 			float y = lpc_v[i];
 
-			//! 投影点
+			// 投影点
+            //! 疑问： 把当前帧的这个点，投影到参考帧上？
 			Vec3f pt = RKi * Vec3f(x, y, 1) + t * id;
 			float u = pt[0] / pt[2]; // 归一化坐标
 			float v = pt[1] / pt[2];
@@ -455,9 +494,11 @@ namespace dso
 			float Kv = fyl * v + cyl;
 			float new_idepth = id / pt[2]; // 当前帧上的深度
 
+            //! 疑问：靠，这在搞什么啊？
 			if (lvl == 0 && i % 32 == 0) //* 第0层 每隔32个点
 			{
 				//* 只正的平移 translation only (positive)
+                //; 注意这里直接乘以Ki，实际上就是旋转矩阵为单位帧，所以就相当于只有平移
 				Vec3f ptT = Ki[lvl] * Vec3f(x, y, 1) + t * id;
 				float uT = ptT[0] / ptT[2];
 				float vT = ptT[1] / ptT[2];
@@ -495,12 +536,16 @@ namespace dso
 
 			// 计算残差
 			float refColor = lpc_color[i];
+            //; 双线性插值得到新帧上的图像梯度
 			Vec3f hitColor = getInterpolatedElement33(dINewl, Ku, Kv, wl); // 新帧上插值
 			if (!std::isfinite((float)hitColor[0]))
 				continue;
+            //; 索引0的位置是辐照，所以这里计算残差就是计算辐照的差
 			float residual = hitColor[0] - (float)(affLL[0] * refColor + affLL[1]);
+            // 添加鲁棒核函数
 			float hw = fabs(residual) < setting_huberTH ? 1 : setting_huberTH / fabs(residual);
 
+            //; 如果残差大于设置的阈值，那么需要进行限制，直接设置成最大的能量值
 			if (fabs(residual) > cutoffTH)
 			{
 				if (debugPlot)
@@ -514,9 +559,11 @@ namespace dso
 				if (debugPlot)
 					resImage->setPixel4(lpc_u[i], lpc_v[i], Vec3b(residual + 128, residual + 128, residual + 128));
 
+                //; 对残差添加鲁棒核函数，再加入到总能量中。这个推导就是深蓝学院PPT最开始的那部分
 				E += hw * residual * residual * (2 - hw);
-				numTermsInE++;
+				numTermsInE++;  // E 中数目
 
+                //; 记录这个点投影到参考关键帧上的逆深度、像素梯度等信息
 				buf_warped_idepth[numTermsInWarped] = new_idepth;
 				buf_warped_u[numTermsInWarped] = u;
 				buf_warped_v[numTermsInWarped] = v;
@@ -528,6 +575,8 @@ namespace dso
 				numTermsInWarped++;
 			}
 		}
+
+        // Step 2 把最后的结果进行16字节对齐填充，应该是为了方便后面做128位的SSE加速
 		//* 16字节对齐, 填充上
 		while (numTermsInWarped % 4 != 0)
 		{
@@ -541,7 +590,7 @@ namespace dso
 			buf_warped_refColor[numTermsInWarped] = 0;
 			numTermsInWarped++;
 		}
-		buf_warped_n = numTermsInWarped;
+		buf_warped_n = numTermsInWarped;  //; 类成员变量，要16字节对齐
 
 		if (debugPlot)
 		{
@@ -550,6 +599,7 @@ namespace dso
 			delete resImage;
 		}
 
+        // Step 3 返回结果
 		Vec6 rs;
 		rs[0] = E;											   // 投影的能量值
 		rs[1] = numTermsInE;								   // 投影的点的数目
@@ -557,9 +607,9 @@ namespace dso
 		rs[3] = 0;
 		rs[4] = sumSquaredShiftRT / (sumSquaredShiftNum + 0.1); // 平移+旋转 平均像素移动大小
 		rs[5] = numSaturated / (float)numTermsInE;				// 大于cutoff阈值的百分比
-
 		return rs;
 	}
+
 
 	//@ 把优化完的最新帧设为参考帧
 	void CoarseTracker::setCoarseTrackingRef(
@@ -575,7 +625,18 @@ namespace dso
 		firstCoarseRMSE = -1;
 	}
 
-	//@ 对新来的帧进行跟踪, 优化得到位姿, 光度参数
+    /**
+     * @brief 对新来的帧进行跟踪, 优化得到位姿, 光度参数
+     * 
+     * @param[in] newFrameHessian  最新帧的Hessian
+     * @param[in] lastToNew_out  估计的当前帧到上一个参考帧的运动初值
+     * @param[in] aff_g2l_out  估计的当前帧到上一个参考帧的光度变化的初值
+     * @param[in] coarsestLvl  从哪个金字塔层数开始跟踪
+     * @param[in] minResForAbort  最小的能量值，如果大于这个能量值的1.5倍，本次直接失败，继续下一次
+     * @param[in] wrap 
+     * @return true 
+     * @return false 
+     */
 	bool CoarseTracker::trackNewestCoarse(
 		FrameHessian *newFrameHessian,
 		SE3 &lastToNew_out, AffLight &aff_g2l_out,
@@ -586,8 +647,10 @@ namespace dso
 		debugPlot = setting_render_displayCoarseTrackingFull;
 		debugPrint = false;
 
+        //; 一些判断，为啥传入的开始金字塔层数必须<5?
 		assert(coarsestLvl < 5 && coarsestLvl < pyrLevelsUsed);
-
+        
+        // Step 1 一些变量的初始化
 		lastResiduals.setConstant(NAN);
 		lastFlowIndicators.setConstant(1000);
 
@@ -600,16 +663,17 @@ namespace dso
 
 		bool haveRepeated = false; // 是否重复计算了
 
-		//* 使用金字塔进行跟踪, 从顶层向下开始跟踪
+		// Step 2 使用金字塔进行跟踪, 从顶层向下开始跟踪
 		for (int lvl = coarsestLvl; lvl >= 0; lvl--)
 		{
 			Mat88 H;
 			Vec8 b;
 			float levelCutoffRepeat = 1;
-			//[ ***step 1*** ] 计算残差, 保证最多60%残差大于阈值, 计算正规方程
+			// Step 2.1. 计算残差
+            //; setting_coarseCutoffTH是配置参数，默认20
 			Vec6 resOld = calcRes(lvl, refToNew_current, aff_g2l_current, setting_coarseCutoffTH * levelCutoffRepeat);
 
-			//* 保证大于阈值的点小于60%
+			// Step 2.2. 如果能量大于阈值的超过60%，则放大阈值再次计算，知道满足要求
 			while (resOld[5] > 0.6 && levelCutoffRepeat < 50)
 			{
 				levelCutoffRepeat *= 2; // 超过阈值的多, 则放大阈值重新计算
@@ -619,6 +683,7 @@ namespace dso
 					printf("INCREASING cutoff to %f (ratio is %f)!\n", setting_coarseCutoffTH * levelCutoffRepeat, resOld[5]);
 			}
 
+            // Step 2.3. 计算正规方程，内部使用SSE加速
 			calcGSSSE(lvl, H, b, refToNew_current, aff_g2l_current);
 
 			float lambda = 0.01;
@@ -636,15 +701,16 @@ namespace dso
 				std::cout << refToNew_current.log().transpose() << " AFF " << aff_g2l_current.vec().transpose() << " (rel " << relAff.transpose() << ")\n";
 			}
 
-			//[ ***step 2*** ] 迭代优化
+			// Step 2.4. 迭代优化，注意不同金字塔层的迭代次数不一样
 			for (int iteration = 0; iteration < maxIterations[lvl]; iteration++)
 			{
-				//[ ***step 2.1*** ] 计算增量
+				// Step 2.4.1. 计算增量
 				Mat88 Hl = H;
 				for (int i = 0; i < 8; i++)
-					Hl(i, i) *= (1 + lambda);
-				Vec8 inc = Hl.ldlt().solve(-b);
+					Hl(i, i) *= (1 + lambda);  //; 对角线上+lambda，因此是LM算法求解
+				Vec8 inc = Hl.ldlt().solve(-b);  //; 注意这里是-b，因为SSE计算的时候算的是J'e
 
+                //; 再根据配置文件中的设置，是否固定广度系数。如果有广度校准文件的话，这里默认应该都是>0？
 				if (setting_affineOptModeA < 0 && setting_affineOptModeB < 0) // fix a, b
 				{
 					inc.head<6>() = Hl.topLeftCorner<6, 6>().ldlt().solve(-b.head<6>());
@@ -676,6 +742,7 @@ namespace dso
 					extrapFac = sqrt(sqrt(lambdaExtrapolationLimit / lambda));
 				inc *= extrapFac;
 
+                //; 对求解的增量再乘以缩放系数，才是最后真正的增量
 				Vec8 incScaled = inc;
 				incScaled.segment<3>(0) *= SCALE_XI_ROT;
 				incScaled.segment<3>(3) *= SCALE_XI_TRANS;
@@ -684,14 +751,17 @@ namespace dso
 
 				if (!std::isfinite(incScaled.sum()))
 					incScaled.setZero();
-				//[ ***step 2.2*** ] 使用增量更新后, 重新计算能量值
+
+                // Step 2.4.2. 使用增量更新后, 重新计算能量值
 				SE3 refToNew_new = SE3::exp((Vec6)(incScaled.head<6>())) * refToNew_current;
 				AffLight aff_g2l_new = aff_g2l_current;
 				aff_g2l_new.a += incScaled[6];
 				aff_g2l_new.b += incScaled[7];
 
+                //; 使用计算出来的增量更新位姿、广度之后，再次计算能量
 				Vec6 resNew = calcRes(lvl, refToNew_new, aff_g2l_new, setting_coarseCutoffTH * levelCutoffRepeat);
 
+                //; 0是总能量值，1是构成总能量的点的个数，相除就是平均能量
 				bool accept = (resNew[0] / resNew[1]) < (resOld[0] / resOld[1]); // 平均能量值小则接受
 
 				if (debugPrint)
@@ -707,7 +777,8 @@ namespace dso
 						   inc.norm());
 					std::cout << refToNew_new.log().transpose() << " AFF " << aff_g2l_new.vec().transpose() << " (rel " << relAff.transpose() << ")\n";
 				}
-				//[ ***step 2.3*** ] 接受则求正规方程, 继续迭代, 优化到增量足够小
+
+				// Step 2.4.3. 接受本次迭代则求正规方程, 继续迭代, 优化到增量足够小
 				if (accept)
 				{
 					calcGSSSE(lvl, H, b, refToNew_new, aff_g2l_new);
@@ -716,6 +787,7 @@ namespace dso
 					refToNew_current = refToNew_new;
 					lambda *= 0.5;
 				}
+                //; 否则本次迭代失败，根据LM算法需要对lambda*4继续计算一次
 				else
 				{
 					lambda *= 4;
@@ -730,13 +802,21 @@ namespace dso
 					break;
 				}
 			}
-			//[ ***step 3*** ] 记录上一次残差, 光流指示, 如果调整过阈值则重新计算这一层
+
+			// Step 2.5. 迭代优化完成，记录上一次残差, 光流指示, 如果调整过阈值则重新计算这一层
+            // 优化完成之后查看一下该层最终的标准差，如果标准差大于阈值的1.5倍时，认为该次优化失败了，直接退出。
+            // 这里阈值是动态调节的，假设这是对第k+1个运动假设进行优化，0～k次得到的最优运动假设误差为E（阈值就是这个），
+            // 那么该次优化的误差如果超过了NE（作者使用N=1.5），那就没必要再优化了，直接用最优的结果就好了，
+            // 帮助删除一些不必要的优化时间，但是如果没有超过NE，就认为该运动假设可以继续进行优化
 			// set last residual for that level, as well as flow indicators.
 			lastResiduals[lvl] = sqrtf((float)(resOld[0] / resOld[1])); // 上一次的残差
 			lastFlowIndicators = resOld.segment<3>(2);					//
+            //; 如果这一层优化之后的能量值>1.5*设置的最小能量值，那么直接放弃
 			if (lastResiduals[lvl] > 1.5 * minResForAbort[lvl])
 				return false; //! 如果算出来大于最好的直接放弃
 
+            // 如果该层的初始误差状态并不佳，但是最终的误差确实在NE范围中，那么说明这个初值还有希望，
+            // 就再优化一遍，不过这个机会是整个运动假设优化过程中唯一的一次机会，用掉了就没有了
 			if (levelCutoffRepeat > 1 && !haveRepeated)
 			{
 				lvl++; // 这一层重新算一遍
@@ -766,6 +846,7 @@ namespace dso
 
 		return true;
 	}
+
 
 	void CoarseTracker::debugPlotIDepthMap(float *minID_pt, float *maxID_pt, std::vector<IOWrap::Output3DWrapper *> &wraps)
 	{
