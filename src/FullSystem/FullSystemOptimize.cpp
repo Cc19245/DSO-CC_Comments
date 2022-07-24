@@ -45,11 +45,24 @@ namespace dso
 
 	//@ 对残差进行线性化
 	//@ 参数: [true是applyRes, 并去掉不好的残差] [false不进行固定线性化]
-	void FullSystem::linearizeAll_Reductor(bool fixLinearization, std::vector<PointFrameResidual *> *toRemove, int min, int max, Vec10 *stats, int tid)
+    /**
+     * @brief 对残差进行线性化，实际上就是求雅克比
+     * 
+     * @param[in] fixLinearization 
+     * @param[in] toRemove 
+     * @param[in] min  从哪个残差开始计算雅克比
+     * @param[in] max  截止计算到哪个残差
+     * @param[in] stats 
+     * @param[in] tid 
+     */
+	void FullSystem::linearizeAll_Reductor(bool fixLinearization, 
+        std::vector<PointFrameResidual *> *toRemove, int min, int max, Vec10 *stats, int tid)
 	{
+        //; 遍历所有的残差计算雅克比
 		for (int k = min; k < max; k++)
 		{
 			PointFrameResidual *r = activeResiduals[k];
+            //; 调用这个函数，内部真正计算雅克比，返回值就是这个残差构成的能量值
 			(*stats)[0] += r->linearize(&Hcalib); // 线性化得到能量
 
 			if (fixLinearization) // 固定线性化（优化后执行）
@@ -82,17 +95,29 @@ namespace dso
 		}
 	}
 
+
 	//@ 把线性化结果传给能量函数efResidual, copyJacobians [true: 更新jacobian] [false: 不更新]
+    /**
+     * @brief 此函数就是计算H矩阵的一些中间量
+     * 
+     * @param[in] copyJacobians 
+     * @param[in] min 
+     * @param[in] max 
+     * @param[in] stats 
+     * @param[in] tid 
+     */
 	void FullSystem::applyRes_Reductor(bool copyJacobians, int min, int max, Vec10 *stats, int tid)
 	{
 		for (int k = min; k < max; k++)
-			activeResiduals[k]->applyRes(true);
+        {   
+            activeResiduals[k]->applyRes(true);
+        }
 	}
+
 
 	//@ 计算当前最新帧的能量阈值, 太玄学了
 	void FullSystem::setNewFrameEnergyTH()
 	{
-
 		// collect all residuals and make decision on TH.
 		allResVec.clear();
 		allResVec.reserve(activeResiduals.size() * 2);
@@ -116,7 +141,7 @@ namespace dso
 		assert(setting_frameEnergyTHN < 1);
 
 		std::nth_element(allResVec.begin(), allResVec.begin() + nthIdx, allResVec.end()); // 排序
-		float nthElement = sqrtf(allResVec[nthIdx]);									  // 70% 的值都小于这个值
+		float nthElement = sqrtf(allResVec[nthIdx]);    // 70% 的值都小于这个值
 
 		//? 这阈值为啥这么设置
 		//* 先扩大, 在乘上一个鲁棒函数? , 再算平方得到阈值
@@ -124,15 +149,16 @@ namespace dso
 		newFrame->frameEnergyTH = 26.0f * setting_frameEnergyTHConstWeight + newFrame->frameEnergyTH * (1 - setting_frameEnergyTHConstWeight);
 		newFrame->frameEnergyTH = newFrame->frameEnergyTH * newFrame->frameEnergyTH;
 		newFrame->frameEnergyTH *= setting_overallEnergyTHWeight * setting_overallEnergyTHWeight;
-
-		//
-		//	int good=0,bad=0;
-		//	for(float f : allResVec) if(f<newFrame->frameEnergyTH) good++; else bad++;
-		//	printf("EnergyTH: mean %f, median %f, result %f (in %d, out %d)! \n",
-		//			meanElement, nthElement, sqrtf(newFrame->frameEnergyTH),
-		//			good, bad);
 	}
+
+
 	//@ 对残差进行线性化, 并去掉不在图像内, 并且残差大的
+    /**
+     * @brief 对残差进行线性化，实际上就是求雅克比
+     * 
+     * @param[in] fixLinearization 
+     * @return Vec3 
+     */
 	Vec3 FullSystem::linearizeAll(bool fixLinearization)
 	{
 		double lastEnergyP = 0;
@@ -152,10 +178,12 @@ namespace dso
 		else
 		{
 			Vec10 stats;
+            //; 遍历所有残差，求这些残差的雅克比
 			linearizeAll_Reductor(fixLinearization, toRemove, 0, activeResiduals.size(), &stats, 0);
 			lastEnergyP = stats[0];
 		}
 
+        //; 计算当前最新帧的能量阈值？ 玄学，啥玩意
 		setNewFrameEnergyTH();
 
 		if (fixLinearization)
@@ -170,7 +198,7 @@ namespace dso
 					ph->lastResiduals[1].second = r->state_state;
 			}
 
-			//! residual创建时候都创建, 再去掉不好的
+			// residual创建时候都创建, 再去掉不好的
 			int nResRemoved = 0;
 			for (int i = 0; i < NUM_THREADS; i++) // 线程数
 			{
@@ -198,6 +226,7 @@ namespace dso
 
 		return Vec3(lastEnergyP, lastEnergyR, num); // 后面两个变量都没用
 	}
+
 
 	// applies step to linearization point.
 	//@ 更新各个状态, 并且判断是否可以停止优化
@@ -369,9 +398,6 @@ namespace dso
 	{
 		if (setting_forceAceptStep)
 			return 0;
-		// calculate (x-x0)^T * [2b + H * (x-x0)] for everything saved in L.
-		//ef->makeIDX();
-		//ef->setDeltaF(&Hcalib);
 		return ef->calcMEnergyF();
 	}
 
@@ -387,26 +413,39 @@ namespace dso
 	}
 
 	//@ 对当前的关键帧进行GN优化
+    /**
+     * @brief 重要：整个后端优化的入口函数
+     *   参考博客：https://blog.csdn.net/wubaobao1993/article/details/104343866
+     * 
+     * @param[in] mnumOptIts 
+     * @return float 
+     */
 	float FullSystem::optimize(int mnumOptIts)
 	{
 
 		if (frameHessians.size() < 2)
 			return 0;
+        //; 这里如果滑窗中关键帧个数过少的话，那么不关外部设置优化多少次，这里都多优化几次
 		if (frameHessians.size() < 3)
 			mnumOptIts = 20; // 迭代次数
 		if (frameHessians.size() < 4)
 			mnumOptIts = 15;
 
 		// get statistics and active residuals.
-		//[ ***step 1*** ] 找出未线性化(边缘化)的残差, 加入activeResiduals
+		// Step 1 找出未线性化(边缘化)的残差, 加入activeResiduals
+        //; 可以认为activeResiduals是新的残差边，是没有经过边缘化的，所以没有线性化点
 		activeResiduals.clear();
-		int numPoints = 0;
-		int numLRes = 0;
+		int numPoints = 0;   // 没用
+		int numLRes = 0;     // 没用
+        //; 遍历所有关键帧上的所有地图点
 		for (FrameHessian *fh : frameHessians)
+        {
 			for (PointHessian *ph : fh->pointHessians)
 			{
+                //; 这个地图点可以和其他很多的target帧上的点构成残差
 				for (PointFrameResidual *r : ph->residuals)
 				{
+                    //; 只要没有线性化过，那么就把它加入到新的残差中
 					if (!r->efResidual->isLinearized) // 没有求线性误差
 					{
 						activeResiduals.push_back(r); // 新加入的残差
@@ -417,44 +456,61 @@ namespace dso
 				}
 				numPoints++;
 			}
+        }
 
 		if (!setting_debugout_runquiet)
-			printf("OPTIMIZE %d pts, %d active res, %d lin res!\n", ef->nPoints, (int)activeResiduals.size(), numLRes);
-
-		//[ ***step 2*** ] 线性化activeResiduals的残差, 计算边缘化的能量值 (然而这里都设成0了)
+        {
+            printf("OPTIMIZE %d pts, %d active res, %d lin res!\n", ef->nPoints, (int)activeResiduals.size(), numLRes);
+        }
+		
+		// Step 2 线性化activeResiduals的残差, 计算边缘化的能量值 (然而这里都设成0了)
+        //; 这里所说的线性化实际上就是求残差对状态变量的雅克比
+        //    当前新关键帧的线性化点认为是track时候的位姿，就是第1步的位姿;
+        //    其他关键帧的位姿就是FEJ的线性化点的位姿，都为worldToCam_evalPT
 		//* 线性化, 参数: [true是进行固定线性化, 并去掉不好的残差] [false不进行固定线性化]
 		Vec3 lastEnergy = linearizeAll(false);
-		//? 和linearizeAll计算的有啥区别
+
+		// Step 3 计算被固定线性化点的能量 和 边缘化先验的能量
+        //; 存疑：这个到底算的是先验的能量还是线性化点的能量？
 		double lastEnergyL = calcLEnergy(); // islinearized的量的能量
 		double lastEnergyM = calcMEnergy(); // HM部分的能量
 
 		// 把线性化的结果给efresidual
 		if (multiThreading)
-			treadReduce.reduce(boost::bind(&FullSystem::applyRes_Reductor, this, true, _1, _2, _3, _4), 0, activeResiduals.size(), 50);
+        {
+            treadReduce.reduce(boost::bind(&FullSystem::applyRes_Reductor, this, true, _1, _2, _3, _4), 0, activeResiduals.size(), 50);
+        }
 		else
-			applyRes_Reductor(true, 0, activeResiduals.size(), 0, 0);
-
+        {
+            //; 构建H矩阵所需要的所有中间变量
+            // 所谓输出的中间量就是例如：残差对位姿的偏导的转置* 残差对逆深度的偏导等这类的东西。
+            // 最后会在solveSystem函数里用到这些中间变量，其实所谓中间变量就是雅克比矩阵的一些组成元素。
+            applyRes_Reductor(true, 0, activeResiduals.size(), 0, 0);
+        }   
+			
 		if (!setting_debugout_runquiet)
 		{
 			printf("Initial Error       \t");
 			printOptRes(lastEnergy, lastEnergyL, lastEnergyM, 0, 0, frameHessians.back()->aff_g2l().a, frameHessians.back()->aff_g2l().b);
 		}
-
 		debugPlotTracking();
 
-		//[ ***step 3*** ] 迭代求解
+		// Step 3 正式进入优化，迭代求解
 		double lambda = 1e-1;
 		float stepsize = 1;
 		VecX previousX = VecX::Constant(CPARS + 8 * frameHessians.size(), NAN);
+        //; 遍历迭代次数，不断迭代
 		for (int iteration = 0; iteration < mnumOptIts; iteration++)
 		{
-			//[ ***step 3.1*** ] 备份当前的各个状态值
+			// Step 3.1 备份当前的各个状态值，因为有可能这次优化效果不好，后面还要回退到上次的状态
 			// solve!
 			backupState(iteration != 0);
-			//solveSystemNew(0);
-			//[ ***step 3.2*** ] 求解系统
+
+			// Step 3.2 求解系统
+            //! 重点：内部求解系统
 			solveSystem(iteration, lambda);
-			double incDirChange = (1e-20 + previousX.dot(ef->lastX)) / (1e-20 + previousX.norm() * ef->lastX.norm()); // 两次下降方向的点积（dot/模长）
+			double incDirChange = (1e-20 + previousX.dot(ef->lastX)) / 
+                (1e-20 + previousX.norm() * ef->lastX.norm()); // 两次下降方向的点积（dot/模长）
 			previousX = ef->lastX;
 
 			//? TUM自己的解法???
@@ -470,12 +526,14 @@ namespace dso
 				if (stepsize < 0.25)
 					stepsize = 0.25;
 			}
-			//[ ***step 3.3*** ] 更新状态
+
+			// Step 3.3 更新状态
 			//* 更新变量, 判断是否停止
 			bool canbreak = doStepFromBackup(stepsize, stepsize, stepsize, stepsize, stepsize);
 
 			// eval new energy!
 			//* 更新后重新计算
+            //; 更新状态后重新计算所有的能量，包括没有固定线性化点的能量、先验(或者固定线性化点？)的能量、边缘化先验的能量？
 			Vec3 newEnergy = linearizeAll(false);
 			double newEnergyL = calcLEnergy();
 			double newEnergyM = calcMEnergy();
@@ -493,16 +551,23 @@ namespace dso
 					   stepsize);
 				printOptRes(newEnergy, newEnergyL, newEnergyM, 0, 0, frameHessians.back()->aff_g2l().a, frameHessians.back()->aff_g2l().b);
 			}
-			//[ ***step 4*** ] 判断是否接受这次计算
+
+			// Step 3.4 判断是否接受这次计算
 			if (setting_forceAceptStep || (newEnergy[0] + newEnergy[1] + newEnergyL + newEnergyM <
 										   lastEnergy[0] + lastEnergy[1] + lastEnergyL + lastEnergyM))
 			{
 				// 接受更新后的量
 				if (multiThreading)
-					treadReduce.reduce(boost::bind(&FullSystem::applyRes_Reductor, this, true, _1, _2, _3, _4), 0, activeResiduals.size(), 50);
+                {
+                    treadReduce.reduce(boost::bind(&FullSystem::applyRes_Reductor, this, true, _1, _2, _3, _4), 
+                        0, activeResiduals.size(), 50);
+                }
 				else
-					applyRes_Reductor(true, 0, activeResiduals.size(), 0, 0);
-
+                {
+                    //; 又计算一次H需要的中间量是干嘛？
+                    applyRes_Reductor(true, 0, activeResiduals.size(), 0, 0);
+                }
+					
 				lastEnergy = newEnergy;
 				lastEnergyL = newEnergyL;
 				lastEnergyM = newEnergyM;
@@ -511,7 +576,7 @@ namespace dso
 			}
 			else
 			{ // 不接受, roll back
-				loadSateBackup();
+				loadSateBackup(); //; 不接受本次更新，那么把所有状态量都恢复到之前的状态
 				lastEnergy = linearizeAll(false);
 				lastEnergyL = calcLEnergy();
 				lastEnergyM = calcMEnergy();
@@ -520,19 +585,18 @@ namespace dso
 
 			if (canbreak && iteration >= setting_minOptIterations)
 				break;
-		}
+		} // 迭代优化完成
 
-		//[ ***step 5*** ] 把最新帧的位姿设为线性化点
+		// Step 4 把最新帧的位姿设为线性化点
 		//* 最新一帧的位姿设为线性化点, 0-5是位姿增量因此是0, 6-7是值, 直接赋值
 		Vec10 newStateZero = Vec10::Zero();
 		newStateZero.segment<2>(6) = frameHessians.back()->get_state().segment<2>(6);
-
 		frameHessians.back()->setEvalPT(frameHessians.back()->PRE_worldToCam,
 										newStateZero); // 最新帧设置为线性化点, 待估计量
 		EFDeltaValid = false;
 		EFAdjointsValid = false;
 		ef->setAdjointsF(&Hcalib); // 重新计算adj
-		setPrecalcValues();		   // 更新增量
+		setPrecalcValues();	  // 更新增量
 
 		// 更新之后的能量
 		lastEnergy = linearizeAll(true);
@@ -551,7 +615,8 @@ namespace dso
 			(*calibLog) << Hcalib.value_scaled.transpose() << " " << frameHessians.back()->get_state_scaled().transpose() << " " << sqrtf((float)(lastEnergy[0] / (patternNum * ef->resInA))) << " " << ef->resInM << "\n";
 			calibLog->flush();
 		}
-		//[ ***step 6*** ] 把优化的结果, 给每个帧的shell, 注意这里其他帧的线性点是不更新的
+
+		// Step 5 把优化的结果, 给每个帧的shell, 注意这里其他帧的线性点是不更新的
 		//* 把优化结果给shell
 		{
 			boost::unique_lock<boost::mutex> crlock(shellPoseMutex);
@@ -568,15 +633,24 @@ namespace dso
 		return sqrtf((float)(lastEnergy[0] / (patternNum * ef->resInA)));
 	}
 
+
 	//@ 求解系统
+    /**
+     * @brief 求解后端优化系统，这部分只是单纯的求解Hx=b，也是整个后端的核心数学部分
+     * 
+     * @param[in] iteration 
+     * @param[in] lambda 
+     */
 	void FullSystem::solveSystem(int iteration, double lambda)
 	{
+        // 1.求解之前先计算零空间
 		ef->lastNullspaces_forLogging = getNullspaces(
 			ef->lastNullspaces_pose,
 			ef->lastNullspaces_scale,
 			ef->lastNullspaces_affA,
 			ef->lastNullspaces_affB);
 
+        // 2.求解系统
 		ef->solveSystemF(iteration, lambda, &Hcalib);
 	}
 
@@ -585,10 +659,12 @@ namespace dso
 	{
 		if (setting_forceAceptStep)
 			return 0;
-
+        //; 调用后端的能量方程求解固定线性化点的能量
+        //; 貌似不对？这个求得好像是先验的能量吧？
 		double Ef = ef->calcLEnergyF_MT();
 		return Ef;
 	}
+
 
 	//@ 去除外点(残差数目变为0的)
 	void FullSystem::removeOutliers()

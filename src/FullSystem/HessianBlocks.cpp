@@ -226,6 +226,14 @@ namespace dso
 
 	//@ 计算优化前和优化后的相对位姿, 相对光度变化, 及中间变量
 	//! 疑问：没看懂这个部分在干什么？？
+    /**
+     * @brief 这个代码对应深蓝PPT中的P38，由于使用了FEJ，所以这里就是在保存不同的状态，包括固定的线性化点处的相对位姿，
+     *    优化更新状态后的相对位姿等
+     * 
+     * @param[in] host 
+     * @param[in] target 
+     * @param[in] HCalib 
+     */
 	void FrameFramePrecalc::set(FrameHessian *host, FrameHessian *target, CalibHessian *HCalib)
 	{
 		this->host = host; // 这个是赋值, 计数会增加, 不是拷贝

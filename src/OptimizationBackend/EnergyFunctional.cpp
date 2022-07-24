@@ -212,8 +212,8 @@ namespace dso
 	//@ 计算各种状态的相对量的增量
 	//! 疑问：在干啥？这个函数基本没看懂
 	/**
-	 * @brief 
-	 * 
+	 * @brief  这个好像就是在计算各个状态的当前值相对于大的先验（比如相机内参）的增量值？
+	 *   参见深蓝学院PPT P40
 	 * @param[in] HCalib 
 	 */
 	void EnergyFunctional::setDeltaF(CalibHessian *HCalib)
@@ -239,16 +239,19 @@ namespace dso
 					adTargetF[idx];  //; adTargetF是伴随矩阵，即相对状态 对 Target帧的雅克比
 			}
 		}
+        //; 相机内参的先验增量
 		cDeltaF = HCalib->value_minus_value_zero.cast<float>(); // 相机内参增量
 
 		//! 靠，到底在算什么东西啊？？？
 		for (EFFrame *f : frames)
 		{
 			f->delta = f->data->get_state_minus_stateZero().head<8>();					 // 帧位姿增量
+            //; 位姿光度的先验增量
 			f->delta_prior = (f->data->get_state() - f->data->getPriorZero()).head<8>(); // 先验增量
 
 			for (EFPoint *p : f->points)
 			{
+                //; 逆深度的先验增量
 				p->deltaF = p->data->idepth - p->data->idepth_zero; // 逆深度的增量
 			}
 		}
@@ -282,14 +285,22 @@ namespace dso
 		else
 		{
 			accSSE_top_A->setZero(nFrames);
+            //; 遍历所有的能量帧
 			for (EFFrame *f : frames)
-				for (EFPoint *p : f->points)
-					accSSE_top_A->addPoint<0>(p, this); //! mode 0 增加EF点
+            {
+                //; 遍历帧上的所有点
+                for (EFPoint *p : f->points)
+                {
+                    accSSE_top_A->addPoint<0>(p, this); //! mode 0 增加EF点
+                }
+            }
+				
 			// accSSE_top_A->stitchDoubleMT(red,H,b,this,false,false); // 不加先验, 得到H, b
 			accSSE_top_A->stitchDoubleMT(red, H, b, this, true, false); // 加先验, 得到H, b
 			resInA = accSSE_top_A->nres[0];								// 所有残差计数
 		}
 	}
+
 
 	//@ 计算 H 和 b , 加先验, res是减去线性化残差
 	// accumulates & shifts L.
@@ -418,42 +429,52 @@ namespace dso
 	}
 
 	//@ 也是求能量, 使用HM和bM求的, delta是绝对的
-
 	double EnergyFunctional::calcMEnergyF()
 	{
-
 		assert(EFDeltaValid);
 		assert(EFAdjointsValid);
 		assert(EFIndicesValid);
 
 		VecX delta = getStitchedDeltaF();
-		return delta.dot(2 * bM + HM * delta);
+        //; 下面这个能量结果这篇博客中有：https://blog.csdn.net/wubaobao1993/article/details/104343866
+		return delta.dot(2 * bM + HM * delta);  
 	}
 
+
 	//@ 计算所有点的能量E之和, delta是相对的
+    /**
+     * @brief 
+     * 
+     * @param[in] min 
+     * @param[in] max 
+     * @param[in] stats 
+     * @param[in] tid 
+     */
 	void EnergyFunctional::calcLEnergyPt(int min, int max, Vec10 *stats, int tid)
 	{
-
 		Accumulator11 E;
 		E.initialize();
 		VecCf dc = cDeltaF;
 
+        //; 遍历所有的点
 		for (int i = min; i < max; i++)
 		{
 			EFPoint *p = allPoints[i];
 			float dd = p->deltaF;
 
+            //; 遍历这些点构成的残差
 			for (EFResidual *r : p->residualsAll)
 			{
 				if (!r->isLinearized || !r->isActive())
 					continue; // 同时满足
 
+                //; 取出构成这个点的残差的host帧和target帧之间的位姿变化
 				Mat18f dp = adHTdeltaF[r->hostIDX + nFrames * r->targetIDX];
 				RawResidualJacobian *rJ = r->J;
 
+                //! 靠，下面的开始看不懂了啊...
 				// compute Jp*delta
 				float Jp_delta_x_1 = rJ->Jpdxi[0].dot(dp.head<6>()) + rJ->Jpdc[0].dot(dc) + rJ->Jpdd[0] * dd;
-
 				float Jp_delta_y_1 = rJ->Jpdxi[1].dot(dp.head<6>()) + rJ->Jpdc[1].dot(dc) + rJ->Jpdd[1] * dd;
 
 				__m128 Jp_delta_x = _mm_set1_ps(Jp_delta_x_1);
@@ -463,9 +484,8 @@ namespace dso
 
 				for (int i = 0; i + 3 < patternNum; i += 4)
 				{
-
-					//! PATTERN: E = (2*resb_toZeroF + J*delta) * J*delta.
-					//! E = (f(x0)+J*dx)^2 = dx*H*dx + 2*J*dx*f(x0) + f(x0)^2 丢掉常数 f(x0)^2
+					// PATTERN: E = (2*resb_toZeroF + J*delta) * J*delta.
+					// E = (f(x0)+J*dx)^2 = dx*H*dx + 2*J*dx*f(x0) + f(x0)^2 丢掉常数 f(x0)^2
 					__m128 Jdelta = _mm_mul_ps(_mm_load_ps(((float *)(rJ->JIdx)) + i), Jp_delta_x);
 					Jdelta = _mm_add_ps(Jdelta, _mm_mul_ps(_mm_load_ps(((float *)(rJ->JIdx + 1)) + i), Jp_delta_y));
 					Jdelta = _mm_add_ps(Jdelta, _mm_mul_ps(_mm_load_ps(((float *)(rJ->JabF)) + i), delta_a));
@@ -491,7 +511,13 @@ namespace dso
 		(*stats)[0] += E.A;
 	}
 
+
 	//@ MT是多线程, 计算能量, 包括 先验 + 点残差平方
+    /**
+     * @brief 计算先验能量，先验包括第一帧的位姿/光度先验、第一帧的逆深度先验、相机参数先验
+     * 
+     * @return double 
+     */
 	double EnergyFunctional::calcLEnergyF_MT()
 	{
 		assert(EFDeltaValid);
@@ -499,19 +525,23 @@ namespace dso
 		assert(EFIndicesValid);
 
 		double E = 0;
-		//! 先验的能量 (x-x_prior)^T * ∑ * (x-x_prior)
+		// 先验的能量 (x-x_prior)^T * ∑ * (x-x_prior)
 		//* 因为 f->prior 是hessian的对角线, 使用向量表示, 所以使用cwiseProduct进行逐个相乘
+        //; 1.遍历所有的能量帧，计算位姿先验(只有第一帧有)能量+相机内参能量
 		for (EFFrame *f : frames)
-			E += f->delta_prior.cwiseProduct(f->prior).dot(f->delta_prior); // 位姿先验
-
+        {
+            E += f->delta_prior.cwiseProduct(f->prior).dot(f->delta_prior); // 位姿先验
+        }	
 		E += cDeltaF.cwiseProduct(cPriorF).dot(cDeltaF); // 相机内参先验
 
+        //; 2.多线程计算逆深度的先验(只有第一帧有)能量
 		red->reduce(boost::bind(&EnergyFunctional::calcLEnergyPt,
 								this, _1, _2, _3, _4),
 					0, allPoints.size(), 50);
 
 		return E + red->stats[0];
 	}
+
 
 	//@ 向能量函数中插入一残差, 更新连接图关系
 	EFResidual *EnergyFunctional::insertResidual(PointFrameResidual *r)
@@ -951,18 +981,30 @@ namespace dso
 		//	std::cout << "EigPost:: " << eigenvaluesPost.transpose() << "\n";
 	}
 
+
 	//@ 计算正规方程, 并求解
+    /**
+     * @brief 整个后端滑窗优化的正规方程求解
+     * 
+     * @param[in] iteration 
+     * @param[in] lambda 
+     * @param[in] HCalib 
+     */
 	void EnergyFunctional::solveSystemF(int iteration, double lambda, CalibHessian *HCalib)
 	{
+        //; setting_solverMode = SOLVER_FIX_LAMBDA | SOLVER_ORTHOGONALIZE_X_LATER 
+        //; setting_sovlerMode是使用12位二进制数来表示不同的求解模式，下面按位&的话就可以判断是否其中含有某种模式
 		if (setting_solverMode & SOLVER_USE_GN)
 			lambda = 0; // 不同的位控制不同的模式
+        //; 满足这个条件
 		if (setting_solverMode & SOLVER_FIX_LAMBDA)
 			lambda = 1e-5; //! 还真他娘的用的GN, 只是一个小阻尼
 
 		assert(EFDeltaValid);
 		assert(EFAdjointsValid);
 		assert(EFIndicesValid);
-		//[ ***step 1*** ] 先计算正规方程, 涉及边缘化, 先验, 舒尔补等
+
+		// Step 1 先计算正规方程, 涉及边缘化, 先验, 舒尔补等
 		MatXX HL_top, HA_top, H_sc;
 		VecX bL_top, bA_top, bM_top, b_sc;
 
@@ -971,7 +1013,7 @@ namespace dso
 
 		//* 边缘化fix的残差, 有边缘化对的, 使用的res_toZeroF减去线性化部分, 加上先验, 没有逆深度的部分
 		//bug: 这里根本就没有点参与了, 只有先验信息, 因为边缘化的和删除的点都不在了
-		//! 这里唯一的作用就是 把 p相关的置零
+		//? 这里唯一的作用就是 把 p相关的置零
 		accumulateLF_MT(HL_top, bL_top, multiThreading); // 计算的是之前计算过得
 														 // p->Hdd_accLF = 0;
 														 // p->bd_accLF = 0;
@@ -984,29 +1026,10 @@ namespace dso
 		//* 由于固定线性化点, 每次迭代更新残差
 		bM_top = (bM + HM * getStitchedDeltaF());
 
-		// printf("HA_top: \n");
-		// for(int i = 0; i < HA_top.rows(); i++)
-		// {
-		// 	// for(int j = 0; j < HA_top.cols(); j++)
-		// 	{
-		// 		printf("  %f", HA_top(i,i));
-		// 	}
-		// 	// printf("; \n");
-		// }
-
-		// printf("HL_top: \n");
-		// for(int i = 0; i < HL_top.rows(); i++)
-		// {
-		// 	// for(int j = 0; j < HL_top.cols(); j++)
-		// 	{
-		// 		printf("  %f", HL_top(i,i));
-		// 	}
-		// 	// printf("; \n");
-		// }
-
 		MatXX HFinal_top;
 		VecX bFinal_top;
-		//[ ***step 2*** ] 如果是设置求解正交系统, 则把相对应的零空间部分Jacobian设置为0, 否则正常计算schur
+		// Step 2 如果是设置求解正交系统, 则把相对应的零空间部分Jacobian设置为0, 否则正常计算schur
+        //; 实际上设置中不满足这个条件，因此不会执行这个if语句
 		if (setting_solverMode & SOLVER_ORTHOGONALIZE_SYSTEM)
 		{
 			// have a look if prior is there.
@@ -1036,9 +1059,9 @@ namespace dso
 			for (int i = 0; i < 8 * nFrames + CPARS; i++)
 				HFinal_top(i, i) *= (1 + lambda);
 		}
+        //; 实际执行这里
 		else
 		{
-
 			// HFinal_top = HL_top + HM + HA_top;
 			HFinal_top = HM + HA_top;
 			// bFinal_top = bL_top + bM_top + bA_top - b_sc;
@@ -1054,8 +1077,9 @@ namespace dso
 			HFinal_top -= H_sc * (1.0f / (1 + lambda)); // 因为Schur里面有个对角线的逆, 所以是倒数
 		}
 
-		//[ ***step 3*** ] 使用SVD求解, 或者ldlt直接求解
+		// Step 3 使用SVD求解, 或者ldlt直接求解
 		VecX x;
+        //; 这里配置文件也不是使用SVD求解，所以不执行这个
 		if (setting_solverMode & SOLVER_SVD)
 		{
 			//* 为数值稳定进行缩放
@@ -1098,6 +1122,7 @@ namespace dso
 			//! x = V*∑^-1*U^T*b   把scaled的乘回来
 			x = SVecI.asDiagonal() * svd.matrixV() * Ub;
 		}
+        //; 实际应该执行这个？为啥注释都在上面？
 		else
 		{
 			VecX SVecI = (HFinal_top.diagonal() + VecX::Constant(HFinal_top.cols(), 10)).cwiseSqrt().cwiseInverse();
@@ -1105,7 +1130,8 @@ namespace dso
 			x = SVecI.asDiagonal() * HFinalScaled.ldlt().solve(SVecI.asDiagonal() * bFinal_top); //  SVec.asDiagonal() * svd.matrixV() * Ub;
 		}
 
-		//[ ***step 4*** ] 如果设置的是直接对解进行处理, 直接去掉解x中的零空间
+		// Step 4 如果设置的是直接对解进行处理, 直接去掉解x中的零空间
+        //; 实际DSO中设置的是SOLVER_ORTHOGONALIZE_X_LATER，但是为啥还要判断满足迭代次数>=2(LATER的含义)呢？
 		if ((setting_solverMode & SOLVER_ORTHOGONALIZE_X) || (iteration >= 2 && (setting_solverMode & SOLVER_ORTHOGONALIZE_X_LATER)))
 		{
 			VecX xOld = x;
@@ -1121,12 +1147,13 @@ namespace dso
 
 		lastX = x;
 
-		//[ ***step 5*** ] 分别求出各个待求量的增量值
+		// Step 5 分别求出各个待求量的增量值
 		//resubstituteF(x, HCalib);
 		currentLambda = lambda;
 		resubstituteF_MT(x, HCalib, multiThreading);
 		currentLambda = 0;
 	}
+    
 
 	//@ 设置EFFrame, EFPoint, EFResidual对应的 ID 号
 	void EnergyFunctional::makeIDX()

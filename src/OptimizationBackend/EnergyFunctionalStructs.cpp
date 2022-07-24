@@ -34,18 +34,25 @@
 namespace dso
 {
 
+    /**
+     * @brief  计算优化过程中后面构造H矩阵的时候，需要的中间变量
+     *  参考博客：
+     *  博客中4.7.6节对下面的变量代表的物理含义进行了介绍
+     */
 	void EFResidual::takeDataF()
 	{
+        //; 这个交换是干啥的啊？
 		std::swap<RawResidualJacobian *>(J, data->J);
 
-		//! 图像导数 * 图像导数 * 逆深度导数
+		// 图像导数 * 图像导数 * 逆深度导数
 		Vec2f JI_JI_Jd = J->JIdx2 * J->Jpdd;
-		//! 位姿导数 * 图像导数 * 图像导数 * 逆深度导数
+		// 位姿导数 * 图像导数 * 图像导数 * 逆深度导数
 		for (int i = 0; i < 6; i++)
 			JpJdF[i] = J->Jpdxi[0][i] * JI_JI_Jd[0] + J->Jpdxi[1][i] * JI_JI_Jd[1];
-		//! 图像导数 * 逆深度导数 * 光度导数
+		// 图像导数 * 逆深度导数 * 光度导数
 		JpJdF.segment<2>(6) = J->JabJIdx * J->Jpdd;
 	}
+
 
 	//@ 从 FrameHessian 中提取数据
 	void EFFrame::takeData()
@@ -53,16 +60,6 @@ namespace dso
 		prior = data->getPrior().head<8>();									// 得到先验状态, 主要是光度仿射变换
 		delta = data->get_state_minus_stateZero().head<8>();				// 状态与FEJ零状态之间差
 		delta_prior = (data->get_state() - data->getPriorZero()).head<8>(); // 状态与先验之间的差 //? 可先验是0啊?
-
-		//	Vec10 state_zero =  data->get_state_zero();
-		//	state_zero.segment<3>(0) = SCALE_XI_TRANS * state_zero.segment<3>(0);
-		//	state_zero.segment<3>(3) = SCALE_XI_ROT * state_zero.segment<3>(3);
-		//	state_zero[6] = SCALE_A * state_zero[6];
-		//	state_zero[7] = SCALE_B * state_zero[7];
-		//	state_zero[8] = SCALE_A * state_zero[8];
-		//	state_zero[9] = SCALE_B * state_zero[9];
-		//
-		//	std::cout << "state_zero: " << state_zero.transpose() << "\n";
 
 		assert(data->frameID != -1);
 

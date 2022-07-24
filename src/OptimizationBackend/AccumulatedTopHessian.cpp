@@ -34,10 +34,17 @@ namespace dso
 {
 
 	//@ 计算残差对应的 Hessian和Jres
-	template <int mode>
-	void AccumulatedTopHessianSSE::addPoint(EFPoint *p, EnergyFunctional const *const ef, int tid) // 0 = active, 1 = linearized, 2=marginalize
+    /**
+     * @brief 
+     * 
+     * @tparam mode 
+     * @param[in] p 
+     * @param[in] ef 
+     * @param[in] tid 
+     */
+	template <int mode>  // 0 = active, 1 = linearized, 2=marginalize
+	void AccumulatedTopHessianSSE::addPoint(EFPoint *p, EnergyFunctional const *const ef, int tid) 
 	{
-
 		assert(mode == 0 || mode == 1 || mode == 2);
 
 		VecCf dc = ef->cDeltaF; // 内参
@@ -164,6 +171,7 @@ namespace dso
 	template void AccumulatedTopHessianSSE::addPoint<0>(EFPoint *p, EnergyFunctional const *const ef, int tid);
 	template void AccumulatedTopHessianSSE::addPoint<1>(EFPoint *p, EnergyFunctional const *const ef, int tid);
 	template void AccumulatedTopHessianSSE::addPoint<2>(EFPoint *p, EnergyFunctional const *const ef, int tid);
+
 
 	//@ 对某一个线程进行的 H 和 b 计算, 或者是没有使用多线程
 	void AccumulatedTopHessianSSE::stitchDouble(MatXX &H, VecX &b, EnergyFunctional const *const EF, bool usePrior, bool useDelta, int tid)

@@ -59,6 +59,7 @@ namespace dso
 	void FullSystem::flagFramesForMarginalization(FrameHessian *newFH)
 	{
 		//? 怎么会有这种情况呢?
+        //; 在setting中设置的默认值带入应该是1 > 7，所以这个是不会成立的
 		if (setting_minFrameAge > setting_maxFrames)
 		{
 			for (int i = setting_maxFrames; i < (int)frameHessians.size(); i++)
@@ -71,17 +72,22 @@ namespace dso
 
 		int flagged = 0; // 标记为边缘化的个数
 		// marginalize all frames that have not enough points.
+        //; 遍历所有的关键帧，判断是否要边缘化掉该帧
 		for (int i = 0; i < (int)frameHessians.size(); i++)
 		{
 			FrameHessian *fh = frameHessians[i];
+            //; 地图点 + 未成熟的点
 			int in = fh->pointHessians.size() + fh->immaturePoints.size();				  // 还在的点
 			int out = fh->pointHessiansMarginalized.size() + fh->pointHessiansOut.size(); // 边缘化和丢掉的点
 
+            //; 当前帧到最新的关键帧的广度变换
 			Vec2 refToFh = AffLight::fromToVecExposure(frameHessians.back()->ab_exposure, fh->ab_exposure,
 													   frameHessians.back()->aff_g2l(), fh->aff_g2l());
 
-			//* 这一帧里的内点少, 曝光时间差的大, 并且边缘化掉后还有5-7帧, 则边缘化
-			if ((in < setting_minPointsRemaining * (in + out) || fabs(logf((float)refToFh[0])) > setting_maxLogAffFacInWindow) && ((int)frameHessians.size()) - flagged > setting_minFrames)
+			//? 这一帧里留下来的点(地图点+未成熟点，也就是出去边缘化点+删除的点)少或者曝光时间差的大, 
+            //   并且边缘化掉这帧之后滑窗中还能保持最小5帧的大小，那么就可以把这帧边缘化掉
+			if ((in < setting_minPointsRemaining * (in + out) || fabs(logf((float)refToFh[0])) > setting_maxLogAffFacInWindow) 
+                && ((int)frameHessians.size()) - flagged > setting_minFrames)
 			{
 				//printf("MARGINALIZE frame %d, as only %'d/%'d points remaining (%'d %'d %'d %'d). VisInLast %'d / %'d. traces %d, activated %d!\n",
 				//		fh->frameID, in, in+out,
@@ -104,6 +110,7 @@ namespace dso
 		}
 
 		// marginalize one.
+        //; 如果统计完上边边缘化掉的帧之后，滑窗中还有>=7帧的关键帧，那么再利用空间结构再边缘化掉几帧
 		if ((int)frameHessians.size() - flagged >= setting_maxFrames)
 		{
 			double smallestScore = 1;
@@ -140,7 +147,6 @@ namespace dso
 			toMarginalize->flaggedForMarginalization = true;
 			flagged++;
 		}
-
 		//	printf("FRAMES LEFT: ");
 		//	for(FrameHessian* fh : frameHessians)
 		//		printf("%d ", fh->frameID);

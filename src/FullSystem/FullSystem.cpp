@@ -1137,7 +1137,7 @@ namespace dso
 	 */
 	void FullSystem::makeKeyFrame(FrameHessian *fh)
 	{
-		// Step 1  设置当前估计的fh的位姿, 光度参数
+		// Step 0 设置当前估计的fh的位姿, 光度参数
 		// needs to be set by mapping thread
 		{ // 同样取出位姿, 当前的作为最终值
 			//? 为啥要从shell来设置 ???   答: 因为shell不删除, 而且参考帧还会被优化, shell是桥梁
@@ -1147,26 +1147,27 @@ namespace dso
 			fh->setEvalPT_scaled(fh->shell->camToWorld.inverse(), fh->shell->aff_g2l); // 待优化值
 		}
 
-		// Step 2  用这一帧来更新之前帧的未成熟点（和非关键帧的操作一样）
+		// Step 1 和非关键帧一样，利用当前帧对前面关键帧中的未成熟点进行逆深度更新
 		traceNewCoarse(fh); // 更新未成熟点(深度未收敛的点)
 
 		boost::unique_lock<boost::mutex> lock(mapMutex); // 建图锁
 
-		// Step 3  选择要边缘化掉的帧
+		// Step 2 标记后面需要边缘化（从活动窗口踢出）的帧
 		// =========================== Flag Frames to be Marginalized. =========================
 		flagFramesForMarginalization(fh); // TODO 这里没用最新帧，可以改进下
 
-		// Step 4  把当前帧加入到关键帧序列
+		// Step 3 将当前帧加入到滑动窗口中，并计算一下该窗口中其他帧与当前帧之间的一些参数比如相对光度、距离等
 		// =========================== add New Frame to Hessian Struct. =========================
 		fh->idx = frameHessians.size();
 		frameHessians.push_back(fh);
 		fh->frameID = allKeyFramesHistory.size();
 		allKeyFramesHistory.push_back(fh->shell);
-		ef->insertFrame(fh, &Hcalib);
+		ef->insertFrame(fh, &Hcalib);   //; 这里注意，还要把当前关键帧插入到能量函数中
 
+        //! 目前还没有特别明白的地方：保存FEJ的线性化点、计算大的先验和当前状态之间的差值
 		setPrecalcValues(); // 每添加一个关键帧都会运行这个来设置位姿, 设置位姿线性化点
 
-		// Step 5  构建之前关键帧与当前帧fh的残差(旧的)
+		// Step 4 遍历窗口中之前所有帧的成熟点pointHessians，构建它们和新的关键帧的点帧误差PointFrameResidual，加入到ef中；
 		// =========================== add new residuals for old points =========================
 		int numFwdResAdde = 0;
 		for (FrameHessian *fh1 : frameHessians) // go through all active frames
@@ -1178,9 +1179,10 @@ namespace dso
 				PointFrameResidual *r = new PointFrameResidual(ph, fh1, fh); // 新建当前帧fh和之前帧之间的残差
 				r->setState(ResState::IN);
 				ph->residuals.push_back(r);
-				ef->insertResidual(r);
-				ph->lastResiduals[1] = ph->lastResiduals[0];									   // 设置上上个残差
-				ph->lastResiduals[0] = std::pair<PointFrameResidual *, ResState>(r, ResState::IN); // 当前的设置为上一个
+				ef->insertResidual(r);   //; 将构建的残差插入到能量方程中
+				ph->lastResiduals[1] = ph->lastResiduals[0];	// 设置上上个残差
+                // 当前的设置为上一个
+				ph->lastResiduals[0] = std::pair<PointFrameResidual *, ResState>(r, ResState::IN); 
 				numFwdResAdde += 1;
 			}
 		}
@@ -1190,12 +1192,13 @@ namespace dso
         //; 可以成为地图点了，因此这里就把这些点激活，把他们从未成熟点构造成地图点
 		// =========================== Activate Points (& flag for marginalization). =========================
 		activatePointsMT();
-		ef->makeIDX(); // ? 为啥要重新设置ID呢, 是因为加新的帧了么
+        //; 由于上面刚激活了部分未成熟点，所以这里要重新排列ID，因为点的ID和他在hessian中的位置有关
+		ef->makeIDX(); // 为啥要重新设置ID呢, 是因为加新的帧了么
 
 		// Step 7  对滑窗内的关键帧进行优化(说的轻松, 里面好多问题)
 		// =========================== OPTIMIZE ALL =========================
 		fh->frameEnergyTH = frameHessians.back()->frameEnergyTH; // 这两个不是一个值么???
-		float rmse = optimize(setting_maxOptIterations);
+		float rmse = optimize(setting_maxOptIterations);  //; 传入最大的优化迭代次数
 
 		// =========================== Figure Out if INITIALIZATION FAILED =========================
 		//* 所有的关键帧数小于4，认为还是初始化，此时残差太大认为初始化失败
@@ -1245,7 +1248,7 @@ namespace dso
 			ef->lastNullspaces_affA,
 			ef->lastNullspaces_affB);
 		// 边缘化掉点, 加在HM, bM上
-		ef->marginalizePointsF();
+		ef->marginalizePointsF();  //; 边缘化不需要的点
 
 		// Step 10  生成新的点
 		// =========================== add new Immature points & new residuals =========================
@@ -1263,7 +1266,7 @@ namespace dso
 		for (unsigned int i = 0; i < frameHessians.size(); i++)
 			if (frameHessians[i]->flaggedForMarginalization)
 			{
-				marginalizeFrame(frameHessians[i]);
+				marginalizeFrame(frameHessians[i]);  //; 边缘化掉关键帧
 				i = 0;
 			}
 
@@ -1451,11 +1454,17 @@ namespace dso
 
 	//* 计算frameHessian的预计算值, 和状态的delta值
 	//@ 设置关键帧之间的关系
+    /**
+     * @brief 这个预计算值应该就是线性化点的值？
+     * 解答：是的，这里就是在计算由于FEJ需要保留的固定的线性化点的值
+     * 
+     */
 	void FullSystem::setPrecalcValues()
 	{
 		for (FrameHessian *fh : frameHessians)
 		{
-			//; 啥叫预计算值？
+			//! 疑问：啥叫预计算值？
+            //! 解答：应该就是在计算优化之前的线性化点的状态值，为FEJ做准备
 			fh->targetPrecalc.resize(frameHessians.size());	  // 每个目标帧预运算容器, 大小是关键帧数
 
 			for (unsigned int i = 0; i < frameHessians.size(); i++)		 //? 还有自己和自己的???
@@ -1467,6 +1476,7 @@ namespace dso
 
 		// 因为在trackFrame中优化的状态是六自由度姿态​和光度仿射变换参数的相对关系，这里利用伴随矩阵计算绝对位姿和光度变换参数的变化
 		// 建立相关量的微小扰动，包括：adHTdeltaF[idx]，f->delta，f->delta_prior。
+        //; 这里应该就是在计算大的先验和当前状态之间的差值
 		ef->setDeltaF(&Hcalib);
 	}
 

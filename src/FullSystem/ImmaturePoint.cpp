@@ -79,7 +79,7 @@ namespace dso
      *   2.上面匹配成功后，利用本次观测的点更新未成熟的点的逆深度范围
      *  参考博客：https://blog.csdn.net/xxxlinttp/article/details/90640350?spm=1001.2014.3001.5502
      *          https://blog.csdn.net/gbz3300255/article/details/109635712
-     * 
+     *  这个博客更详细，对于深度滤波部分讲的更加细致：https://blog.csdn.net/waittingforyou12/article/details/105870484?spm=1001.2014.3001.5502
      * @param[in] frame 当前帧
      * @param[in] hostToFrame_KRKi  当前帧到host关键帧的旋转*内参 
      * @param[in] hostToFrame_Kt    当前帧到host关键帧的平移

@@ -36,15 +36,15 @@
 	"type": "text-and-comment",
 	},
 	" Step ": {
-	"foreground": "#7CFC00",
-	"iconColour": "#7CFC00",
+	"foreground": "#15db15",
+	"iconColour": "#15db15",
 	"type": "text-and-comment",
 	"hideFromTree": true
 	},
 	"?": {
-	"foreground": "#35ee35",
+	"foreground": "#15db15",
 	"icon": "beaker",
-	"iconColour": "#35ee35",
+	"iconColour": "#15db15",
 	"type": "text-and-comment"
 	},
 	"'": {
