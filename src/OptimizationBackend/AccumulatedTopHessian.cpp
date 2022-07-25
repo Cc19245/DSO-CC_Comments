@@ -67,12 +67,16 @@ namespace dso
 			if (mode == 0) // 只计算新加入的残差
 			{
 				if (r->isLinearized || !r->isActive())
+                {
 					continue;
+                }
 			}
-			if (mode == 1) //bug: 这个条件就一直满足 计算旧的残差, 之前计算过得
+			if (mode == 1) // bug: 这个条件就一直满足 计算旧的残差, 之前计算过得
 			{
 				if (!r->isLinearized || !r->isActive())
-					continue;
+                {
+                    continue;
+                }	
 			}
 			if (mode == 2) // 边缘化计算的情况
 			{
@@ -102,6 +106,7 @@ namespace dso
 
             //; linearized线性化的情况，涂金戈的博客(https://www.cnblogs.com/JingeTU/p/8586163.html)
             //; 中详细阐述了，实际上这个if是一定不会满足的，但是博客中他仍然给出了下面代码的解析
+            //? 上面的解释不太对，这个mode是可以根据不同的模板值来传入的，所以这里还是可以进入这个if函数的
 			if (mode == 1)  
 			{
 				//* 因为计算的是旧的, 由于更新需要重新计算
@@ -202,6 +207,7 @@ namespace dso
 			p->bd_accAF = bd_acc;
 			p->Hcd_accAF = Hcd_acc;
 		}
+        //; 线性化或者边缘化模式，都会设置L相关的变量
 		if (mode == 1 || mode == 2)
 		{
 			p->Hdd_accLF = Hdd_acc;

@@ -745,6 +745,7 @@ namespace dso
 		assert(false);
 	}
 
+
 	//@ 标记要移除点的状态, 边缘化or丢掉
 	void FullSystem::flagPointsForRemoval()
 	{
@@ -756,26 +757,36 @@ namespace dso
 		//if(setting_margPointVisWindow>0)
 		{ //bug 又是不用的一条语句
 			for (int i = ((int)frameHessians.size()) - 1; i >= 0 && i >= ((int)frameHessians.size()); i--)
-				if (!frameHessians[i]->flaggedForMarginalization)
+			{
+            	if (!frameHessians[i]->flaggedForMarginalization)
+                {
 					fhsToKeepPoints.push_back(frameHessians[i]);
-
+                }
+            }
 			for (int i = 0; i < (int)frameHessians.size(); i++)
-				if (frameHessians[i]->flaggedForMarginalization)
+			{
+                if (frameHessians[i]->flaggedForMarginalization)
+                {
 					fhsToMargPoints.push_back(frameHessians[i]);
+                }
+            }
 		}
 
 		//ef->setAdjointsF();
 		//ef->setDeltaF(&Hcalib);
 		int flag_oob = 0, flag_in = 0, flag_inin = 0, flag_nores = 0;
 
+        //; 遍历所有关键帧
 		for (FrameHessian *host : frameHessians) // go through all active frames
 		{
+            //; 遍历这个关键帧持有的所有点
 			for (unsigned int i = 0; i < host->pointHessians.size(); i++)
 			{
 				PointHessian *ph = host->pointHessians[i];
 				if (ph == 0)
+                {
 					continue;
-
+                }
 				//* 丢掉相机后面, 没有残差的点
 				if (ph->idepth_scaled < 0 || ph->residuals.size() == 0)
 				{
@@ -785,6 +796,8 @@ namespace dso
 					flag_nores++;
 				}
 				//* 把边缘化的帧上的点, 以及受影响较大的点标记为边缘化or删除
+                //; OOB是Out Of Boundary，也就是点投影下来没有落到视场内，因此没有构成残差项
+                //; 
 				else if (ph->isOOB(fhsToKeepPoints, fhsToMargPoints) || host->flaggedForMarginalization)
 				{
 					flag_oob++;
@@ -824,7 +837,6 @@ namespace dso
 					{
 						host->pointHessiansOut.push_back(ph);
 						ph->efPoint->stateFlag = EFPointStatus::PS_DROP;
-
 						//printf("drop point in frame %d (%d goodRes, %d activeRes)\n", ph->host->idx, ph->numGoodResiduals, (int)ph->residuals.size());
 					}
 
@@ -844,6 +856,7 @@ namespace dso
 			}
 		}
 	}
+
 
 	/********************************
 	 * @ function:  整个DSO系统的入口函数
@@ -1264,12 +1277,13 @@ namespace dso
 		// Step 11  边缘化掉关键帧
 		//* 边缘化一帧要删除or边缘化上面所有点
 		for (unsigned int i = 0; i < frameHessians.size(); i++)
+        {
 			if (frameHessians[i]->flaggedForMarginalization)
 			{
 				marginalizeFrame(frameHessians[i]);  //; 边缘化掉关键帧
 				i = 0;
 			}
-
+        }
 		printLogLine();
 		//printEigenValLine();
 	}

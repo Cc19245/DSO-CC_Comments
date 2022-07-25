@@ -153,10 +153,11 @@ namespace dso
 		//	printf("\n");
 	}
 
+
 	//@ 边缘化一个关键帧, 删除该帧上的残差
 	void FullSystem::marginalizeFrame(FrameHessian *frame)
 	{
-		//! marginalize or remove all this frames points.
+		// marginalize or remove all this frames points.
 		assert((int)frame->pointHessians.size() == 0);
 
 		ef->marginalizeFrame(frame->efFrame);
@@ -205,8 +206,10 @@ namespace dso
 
 		deleteOutOrder<FrameHessian>(frameHessians, frame);
 		for (unsigned int i = 0; i < frameHessians.size(); i++)
+        {
 			frameHessians[i]->idx = i;
-
+        }
+        
 		setPrecalcValues();
 		ef->setAdjointsF(&Hcalib);
 	}

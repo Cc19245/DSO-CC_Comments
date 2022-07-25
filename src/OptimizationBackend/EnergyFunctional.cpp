@@ -307,7 +307,8 @@ namespace dso
 	//@ 计算 H 和 b , 加先验, res是减去线性化残差
 	// accumulates & shifts L.
 	/**
-	 * @brief 这里计算滑窗内所有帧和点构成的正规方程中，b关于状态的部分，即b_XX，也就是J*r（或深蓝PPT中的b_A）
+	 * @brief 舒尔补，这里计算滑窗内所有帧和点构成的正规方程中，b关于状态的部分，
+     *        即b_XX，也就是J*r（或深蓝PPT中的b_A）
 	 * 
 	 * @param[in] H 
 	 * @param[in] b 
@@ -324,16 +325,25 @@ namespace dso
 			accSSE_top_L->stitchDoubleMT(red, H, b, this, true, true);
 			resInL = accSSE_top_L->nres[0];
 		}
+        //; 配置文件中不是多线程，所以走这个分支
 		else
 		{
 			accSSE_top_L->setZero(nFrames);
 			for (EFFrame *f : frames)
-				for (EFPoint *p : f->points)
-					accSSE_top_L->addPoint<1>(p, this); //! mode 1
+            {
+                //; 遍历所有的能量帧上的所有能量点
+                for (EFPoint *p : f->points)
+                {
+                    //; 调用舒尔补的函数，计算
+                    accSSE_top_L->addPoint<1>(p, this); // mode 1
+                }
+            }
+				
 			accSSE_top_L->stitchDoubleMT(red, H, b, this, true, false);
 			resInL = accSSE_top_L->nres[0];
 		}
 	}
+
 
 	//@ 计算边缘化掉逆深度的Schur complement部分
 	/**
@@ -358,23 +368,38 @@ namespace dso
 		{
 			accSSE_bot->setZero(nFrames);
 			for (EFFrame *f : frames)
+            {
+                //; 遍历所有能量帧上的能量点
 				for (EFPoint *p : f->points)
+                {
+                    //; 这里调用的就是计算舒尔补的SSE了，和之前计算正常的残差雅克比和线性化雅克比都不一样
 					accSSE_bot->addPoint(p, true);
+                }
+            }
 			accSSE_bot->stitchDoubleMT(red, H, b, this, false);
 		}
 	}
 
 	//@ 计算相机内参和位姿, 光度的增量
+    /**
+     * @brief 计算滑窗中各个帧的位姿、光度增量，相机内参增量，然后还会调用函数计算逆深度增量
+     *  参考博客：https://www.cnblogs.com/JingeTU/p/9157620.html
+     * @param[in] x 
+     * @param[in] HCalib 
+     * @param[in] MT 
+     */
 	void EnergyFunctional::resubstituteF_MT(VecX x, CalibHessian *HCalib, bool MT)
 	{
 		assert(x.size() == CPARS + nFrames * 8);
 
 		VecXf xF = x.cast<float>();
+        //; 注意这里取了负号，因为之前算的是-delta_x
 		HCalib->step = -x.head<CPARS>(); // 相机内参, 这次的增量
 
 		Mat18f *xAd = new Mat18f[nFrames * nFrames];
 		VecCf cstep = xF.head<CPARS>();
-
+        
+        //; 遍历所有的能量帧
 		for (EFFrame *h : frames)
 		{
 			h->data->step.head<8>() = -x.segment<8>(CPARS + 8 * h->idx); // 帧位姿和光度求解的增量
@@ -382,32 +407,57 @@ namespace dso
 
 			//* 绝对位姿增量变相对的
 			for (EFFrame *t : frames)
-				xAd[nFrames * h->idx + t->idx] = xF.segment<8>(CPARS + 8 * h->idx).transpose() * adHostF[h->idx + nFrames * t->idx] + xF.segment<8>(CPARS + 8 * t->idx).transpose() * adTargetF[h->idx + nFrames * t->idx];
+            {
+                xAd[nFrames * h->idx + t->idx] = xF.segment<8>(CPARS + 8 * h->idx).transpose() * adHostF[h->idx + nFrames * t->idx] + xF.segment<8>(CPARS + 8 * t->idx).transpose() * adTargetF[h->idx + nFrames * t->idx];
+            }
 		}
 
 		//* 计算点的逆深度增量
 		if (MT)
+        {
 			red->reduce(boost::bind(&EnergyFunctional::resubstituteFPt,
 									this, cstep, xAd, _1, _2, _3, _4),
 						0, allPoints.size(), 50);
+        }
 		else
+        {
+            //; 单线程，求解逆深度的增量
 			resubstituteFPt(cstep, xAd, 0, allPoints.size(), 0, 0);
+        }
 
 		delete[] xAd;
 	}
 
+
 	//@ 计算点逆深度的增量
+    /**
+     * @brief 计算点的逆深度增量
+     *   参考博客：https://www.cnblogs.com/JingeTU/p/9157620.html
+     * 
+     * @param[in] xc 
+     * @param[in] xAd 
+     * @param[in] min 
+     * @param[in] max 
+     * @param[in] stats 
+     * @param[in] tid 
+     */
 	void EnergyFunctional::resubstituteFPt(
 		const VecCf &xc, Mat18f *xAd, int min, int max, Vec10 *stats, int tid)
 	{
+        //; 遍历所有点，求其逆深度增量
 		for (int k = min; k < max; k++)
 		{
 			EFPoint *p = allPoints[k];
 
 			int ngoodres = 0;
 			for (EFResidual *r : p->residualsAll)
+            {
 				if (r->isActive())
+                {
 					ngoodres++;
+                }
+            }
+
 			if (ngoodres == 0)
 			{
 				p->data->step = 0;
@@ -420,7 +470,9 @@ namespace dso
 			for (EFResidual *r : p->residualsAll)
 			{
 				if (!r->isActive())
+                {
 					continue;
+                }
 				//* 减去逆深度和位姿 光度参数
 				b -= xAd[r->hostIDX * nFrames + r->targetIDX] * r->JpJdF; //! 绝对变相对的, xAd是转置了的
 			}
@@ -429,6 +481,7 @@ namespace dso
 			assert(std::isfinite(p->data->step));
 		}
 	}
+
 
 	//@ 也是求能量, 使用HM和bM求的, delta是绝对的
 	double EnergyFunctional::calcMEnergyF()
@@ -833,13 +886,15 @@ namespace dso
 				orthogonalize(&b, &H);
 		}
 
-		//! 给边缘化的量加了个权重，不准确的线性化
+		// 给边缘化的量加了个权重，不准确的线性化
 		HM += setting_margWeightFac * H; //* 所以边缘化的部分直接加在HM bM了
 		bM += setting_margWeightFac * b;
 
 		if (setting_solverMode & SOLVER_ORTHOGONALIZE_FULL)
+        {
 			orthogonalize(&bM, &HM);
-
+        }
+        
 		EFIndicesValid = false;
 		makeIDX(); // 梳理ID
 	}
@@ -1012,21 +1067,27 @@ namespace dso
 
 		// Step 1.1 针对新的残差, 使用的当前残差, 没有逆深度的部分
         //; 新的残差？
+        //; 传入的multiThreading在配置文件中默认是false，也就是不使用多线程操作
 		accumulateAF_MT(HA_top, bA_top, multiThreading);
 
 		// Step 1.2 边缘化fix的残差, 有边缘化对的, 使用的res_toZeroF减去线性化部分, 加上先验, 没有逆深度的部分
 		//bug: 这里根本就没有点参与了, 只有先验信息, 因为边缘化的和删除的点都不在了
 		// 这里唯一的作用就是 把 p相关的置零
+        //; 这里面的操作和上面accumulateAF_MT的操作完全一样，唯一不同的是这里面使用mode=1，表示线性化
+        //! 疑问：关于这个线性化还是没有特别明白
 		accumulateLF_MT(HL_top, bL_top, multiThreading); // 计算的是之前计算过得
 														 // p->Hdd_accLF = 0;
 														 // p->bd_accLF = 0;
 														 // p->Hcd_accLF =0 ;
 
-		// Step 1.3 关于逆深度的Schur部分
+		// Step 1.3 关于逆深度的Schur部分计算
+        //; 注意这里好像就是为了求解舒尔补计算本次的Hx=b方程，而不是边缘化的那个舒尔补
 		accumulateSCF_MT(H_sc, b_sc, multiThreading);
 
 		//TODO HM 和 bM是啥啊
 		// Step 1.4 由于固定线性化点, 每次迭代更新残差
+        //; 这个地方应该就是和VINS的FEJ一样的，由于使用了FEJ，虽然Hessian不能改变了，但是每次的残差需要改变
+        //; 这里和深蓝PPT P38可以对应上，这里的HM和bM就是上次边缘化的时候得到的Hessian和b，也就是线性化点
 		bM_top = (bM + HM * getStitchedDeltaF());
 
 		MatXX HFinal_top;
@@ -1039,8 +1100,12 @@ namespace dso
 			// have a look if prior is there.
 			bool haveFirstFrame = false;
 			for (EFFrame *f : frames)
+            {
 				if (f->frameID == 0)
+                {
 					haveFirstFrame = true;
+                }
+            }
 
 			// 计算Schur之后的
 			// MatXX HT_act =  HL_top + HA_top - H_sc;
@@ -1048,8 +1113,8 @@ namespace dso
 			// VecX bT_act =   bL_top + bA_top - b_sc;
 			VecX bT_act = bA_top - b_sc;
 
-			//! 包含第一帧则不减去零空间
-			//! 不包含第一帧, 因为要固定第一帧, 和第一帧统一, 减去零空间, 防止在零空间乱飘
+			// 包含第一帧则不减去零空间
+			// 不包含第一帧, 因为要固定第一帧, 和第一帧统一, 减去零空间, 防止在零空间乱飘
 			if (!haveFirstFrame)
 				orthogonalize(&bT_act, &HT_act);
 
@@ -1063,13 +1128,14 @@ namespace dso
 			for (int i = 0; i < 8 * nFrames + CPARS; i++)
 				HFinal_top(i, i) *= (1 + lambda);
 		}
-        //; 实际执行这里
+        //; 实际执行这里，先把所有的H和b加起来，包括边缘化的HM、本次求解的H、舒尔补H_sc等
 		else
 		{
 			// HFinal_top = HL_top + HM + HA_top;
-			HFinal_top = HM + HA_top;
+            //; 疑问：这里没有使用线性化计算的那部分H啊？那上面计算了半天还有啥用？
+			HFinal_top = HM + HA_top;  //; 注意加上边缘化固定的HM
 			// bFinal_top = bL_top + bM_top + bA_top - b_sc;
-			bFinal_top = bM_top + bA_top - b_sc;
+			bFinal_top = bM_top + bA_top - b_sc;  
 
 			lastHS = HFinal_top - H_sc;
 			lastbS = bFinal_top;
@@ -1077,11 +1143,15 @@ namespace dso
 			//* 而这个就是阻尼加在了整个Hessian上
 			//? 为什么呢, 是因为减去了零空间么  ??
 			for (int i = 0; i < 8 * nFrames + CPARS; i++)
+            {
+                //; 对角线上乘以一个系数，相当于LM
 				HFinal_top(i, i) *= (1 + lambda);
+            }
 			HFinal_top -= H_sc * (1.0f / (1 + lambda)); // 因为Schur里面有个对角线的逆, 所以是倒数
 		}
 
 		// Step 3 使用SVD求解, 或者ldlt直接求解
+        //? 注意这里是直接使用ldlt求解，参考涂金戈博客：https://www.cnblogs.com/JingeTU/p/9157620.html
 		VecX x;
         //; 这里配置文件也不是使用SVD求解，所以不执行这个
 		if (setting_solverMode & SOLVER_SVD)
@@ -1090,7 +1160,7 @@ namespace dso
 			VecX SVecI = HFinal_top.diagonal().cwiseSqrt().cwiseInverse();
 			MatXX HFinalScaled = SVecI.asDiagonal() * HFinal_top * SVecI.asDiagonal();
 			VecX bFinalScaled = SVecI.asDiagonal() * bFinal_top;
-			//! Hx=b --->  U∑V^T*x = b
+			// Hx=b --->  U∑V^T*x = b
 			Eigen::JacobiSVD<MatXX> svd(HFinalScaled, Eigen::ComputeThinU | Eigen::ComputeThinV);
 
 			VecX S = svd.singularValues(); // 奇异值
@@ -1103,7 +1173,7 @@ namespace dso
 					maxSv = S[i];
 			}
 
-			//! Hx=b --->  U∑V^T*x = b  --->  ∑V^T*x = U^T*b
+			// Hx=b --->  U∑V^T*x = b  --->  ∑V^T*x = U^T*b
 			VecX Ub = svd.matrixU().transpose() * bFinalScaled;
 			int setZero = 0;
 			for (int i = 0; i < Ub.size(); i++)
@@ -1119,27 +1189,34 @@ namespace dso
 					Ub[i] = 0;
 					setZero++;
 				}
-				//! V^T*x = ∑^-1*U^T*b
+				// V^T*x = ∑^-1*U^T*b
 				else
 					Ub[i] /= S[i];
 			}
-			//! x = V*∑^-1*U^T*b   把scaled的乘回来
+			// x = V*∑^-1*U^T*b   把scaled的乘回来
 			x = SVecI.asDiagonal() * svd.matrixV() * Ub;
 		}
         //; 实际应该执行这个？为啥注释都在上面？
 		else
 		{
+            //; 把H对角线上元素+10构成一个向量，然后求一堆什么操作？
 			VecX SVecI = (HFinal_top.diagonal() + VecX::Constant(HFinal_top.cols(), 10)).cwiseSqrt().cwiseInverse();
-			MatXX HFinalScaled = SVecI.asDiagonal() * HFinal_top * SVecI.asDiagonal();
-			x = SVecI.asDiagonal() * HFinalScaled.ldlt().solve(SVecI.asDiagonal() * bFinal_top); //  SVec.asDiagonal() * svd.matrixV() * Ub;
+			//; 把上面的向量构成对角阵，对H进行缩放，保证数值稳定性
+            MatXX HFinalScaled = SVecI.asDiagonal() * HFinal_top * SVecI.asDiagonal();
+            //  SVec.asDiagonal() * svd.matrixV() * Ub;
+            //; 1.这里是ldlt分解求解，注意这里b乘以缩放系数是为了和H缩放保持一致，前面再乘以
+            //;   缩放系数是为了把结果缩放回去，保证结果的正确性
+            //; 2.这里计算的是-delta_x，而不是delta_x，但是后面往状态变量上叠加的时候，会在前面加-，从而转换过来
+			x = SVecI.asDiagonal() * HFinalScaled.ldlt().solve(SVecI.asDiagonal() * bFinal_top); 
 		}
 
 		// Step 4 如果设置的是直接对解进行处理, 直接去掉解x中的零空间
         //; 实际DSO中设置的是SOLVER_ORTHOGONALIZE_X_LATER，但是为啥还要判断满足迭代次数>=2(LATER的含义)呢？
+        //; 也就是迭代的前2次不管零空间的问题？
 		if ((setting_solverMode & SOLVER_ORTHOGONALIZE_X) || (iteration >= 2 && (setting_solverMode & SOLVER_ORTHOGONALIZE_X_LATER)))
 		{
 			VecX xOld = x;
-			orthogonalize(&x, 0);
+			orthogonalize(&x, 0);  //; 处理零空间，把增量的零空间部分减掉
 			// //********************* check nullspace added by gong ***********************
 			// VecX new_b = HA_top * x;
 			// VecX old_b = HA_top * xOld;
@@ -1154,6 +1231,7 @@ namespace dso
 		// Step 5 分别求出各个待求量的增量值
 		//resubstituteF(x, HCalib);
 		currentLambda = lambda;
+        //; 计算滑窗中各个相机位姿+光度增量、相机内参增量，在其内部还会调用函数计算点的逆深度增量
 		resubstituteF_MT(x, HCalib, multiThreading);
 		currentLambda = 0;
 	}

@@ -231,6 +231,17 @@ namespace dso
 
 	// applies step to linearization point.
 	//@ 更新各个状态, 并且判断是否可以停止优化
+    /**
+     * @brief 更新状态变量，并通过步长判断是否已经接近最优解，如果是则可以停止本次优化了
+     * 
+     * @param[in] stepfacC 
+     * @param[in] stepfacT 
+     * @param[in] stepfacR 
+     * @param[in] stepfacA 
+     * @param[in] stepfacD 
+     * @return true 
+     * @return false 
+     */
 	bool FullSystem::doStepFromBackup(float stepfacC, float stepfacT, float stepfacR, float stepfacA, float stepfacD)
 	{
 		//	float meanStepC=0,meanStepP=0,meanStepD=0;
@@ -246,6 +257,7 @@ namespace dso
 
 		float sumNID = 0;
 
+        //; 动量更新方式，实际没用
 		if (setting_solverMode & SOLVER_MOMENTUM)
 		{
 			Hcalib.setValue(Hcalib.value_backup + Hcalib.step); // 内参的值进行update
@@ -273,10 +285,12 @@ namespace dso
 				}
 			}
 		}
-		else
-		{ //* 相机内参更新状态
+		//; 普通更新状态
+        else
+		{ 
+            //* 相机内参更新状态
 			Hcalib.setValue(Hcalib.value_backup + stepfacC * Hcalib.step);
-			//* 相机内参, 光度参数更新
+			//* 相机位姿, 光度参数更新
 			for (FrameHessian *fh : frameHessians)
 			{
 				fh->setState(fh->state_backup + pstepfac.cwiseProduct(fh->step));
@@ -306,13 +320,17 @@ namespace dso
 		sumNID /= numID;
 
 		if (!setting_debugout_runquiet)
+        {
 			printf("STEPS: A %.1f; B %.1f; R %.1f; T %.1f. \t",
 				   sqrtf(sumA) / (0.0005 * setting_thOptIterations),
 				   sqrtf(sumB) / (0.00005 * setting_thOptIterations),
 				   sqrtf(sumR) / (0.00005 * setting_thOptIterations),
 				   sqrtf(sumT) * sumNID / (0.00005 * setting_thOptIterations));
+        }
 
 		EFDeltaValid = false;
+
+        //! 重要：更新相对位姿和光度
 		setPrecalcValues(); // 更新相对位姿, 光度
 
 		// 步长小于阈值则可以停止了
@@ -320,10 +338,8 @@ namespace dso
 			   sqrtf(sumB) < 0.00005 * setting_thOptIterations &&
 			   sqrtf(sumR) < 0.00005 * setting_thOptIterations &&
 			   sqrtf(sumT) * sumNID < 0.00005 * setting_thOptIterations;
-		//
-		//	printf("mean steps: %f %f %f!\n",
-		//			meanStepC, meanStepP, meanStepD);
 	}
+
 
 	// sets linearization point.
 	//@ 对帧, 点, 内参的step和state进行备份
@@ -511,12 +527,14 @@ namespace dso
 
 			// Step 3.2 求解系统
             //! 重点：内部求解系统
+            //; 此函数执行完毕后，就得到滑窗内所有帧的位姿+广度、相机内参、所有点的逆深度的增量
 			solveSystem(iteration, lambda);
 			double incDirChange = (1e-20 + previousX.dot(ef->lastX)) / 
                 (1e-20 + previousX.norm() * ef->lastX.norm()); // 两次下降方向的点积（dot/模长）
 			previousX = ef->lastX;
 
-			//? TUM自己的解法???
+			// TUM自己的解法???
+            //; 牛皮，还有动量法，只不过配置文件中最后没用这里
 			if (std::isfinite(incDirChange) && (setting_solverMode & SOLVER_STEPMOMENTUM))
 			{
 				float newStepsize = exp(incDirChange * 1.4);
@@ -679,8 +697,10 @@ namespace dso
 			{
 				PointHessian *ph = fh->pointHessians[i];
 				if (ph == 0)
+                {
 					continue;
-
+                }
+                
 				if (ph->residuals.size() == 0) // 如果该点的残差数为0, 则丢掉
 				{
 					fh->pointHessiansOut.push_back(ph);

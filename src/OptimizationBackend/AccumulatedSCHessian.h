@@ -93,7 +93,17 @@ namespace dso
 		void stitchDouble(MatXX &H_sc, VecX &b_sc, EnergyFunctional const *const EF, int tid = 0);
 		void addPoint(EFPoint *p, bool shiftPriorToZero, int tid = 0);
 
+
 		//@ 多线程得到Schur complement
+        /**
+         * @brief 得到最后的舒尔补结果
+         * 
+         * @param[in] red 
+         * @param[in] H 
+         * @param[in] b 
+         * @param[in] EF 
+         * @param[in] MT 
+         */
 		void stitchDoubleMT(IndexThreadReduce<Vec10> *red, MatXX &H, VecX &b, EnergyFunctional const *const EF, bool MT)
 		{
 			// sum up, splitting by bock in square.
@@ -123,10 +133,13 @@ namespace dso
 					b.noalias() += bs[i];
 				}
 			}
+            //; 默认配置走这个，不是多线程
 			else
 			{
+                //; H：68x68, b：68x1
 				H = MatXX::Zero(nframes[0] * 8 + CPARS, nframes[0] * 8 + CPARS);
 				b = VecX::Zero(nframes[0] * 8 + CPARS);
+                //; 优化信息统计，就是把
 				stitchDoubleInternal(&H, &b, EF, 0, nframes[0] * nframes[0], 0, -1);
 			}
 
