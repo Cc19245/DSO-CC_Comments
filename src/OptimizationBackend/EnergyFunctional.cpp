@@ -291,11 +291,13 @@ namespace dso
                 //; 遍历帧上的所有点
                 for (EFPoint *p : f->points)
                 {
-                    accSSE_top_A->addPoint<0>(p, this); //! mode 0 增加EF点
+                    // Step 1 遍历所有点构成的残差，计算这些残差构成的hessian矩阵，累加到8*8的数组的对应位置的hessian中
+                    accSSE_top_A->addPoint<0>(p, this); // mode 0 增加EF点
                 }
             }
 				
 			// accSSE_top_A->stitchDoubleMT(red,H,b,this,false,false); // 不加先验, 得到H, b
+            // Step 2 把上面计算的8*8个小的hessian，组合成大的hessian
 			accSSE_top_A->stitchDoubleMT(red, H, b, this, true, false); // 加先验, 得到H, b
 			resInA = accSSE_top_A->nres[0];								// 所有残差计数
 		}
@@ -998,7 +1000,7 @@ namespace dso
 			lambda = 0; // 不同的位控制不同的模式
         //; 满足这个条件
 		if (setting_solverMode & SOLVER_FIX_LAMBDA)
-			lambda = 1e-5; //! 还真他娘的用的GN, 只是一个小阻尼
+			lambda = 1e-5; // 还真他娘的用的GN, 只是一个小阻尼
 
 		assert(EFDeltaValid);
 		assert(EFAdjointsValid);
@@ -1008,27 +1010,29 @@ namespace dso
 		MatXX HL_top, HA_top, H_sc;
 		VecX bL_top, bA_top, bM_top, b_sc;
 
-		//* 针对新的残差, 使用的当前残差, 没有逆深度的部分
+		// Step 1.1 针对新的残差, 使用的当前残差, 没有逆深度的部分
+        //; 新的残差？
 		accumulateAF_MT(HA_top, bA_top, multiThreading);
 
-		//* 边缘化fix的残差, 有边缘化对的, 使用的res_toZeroF减去线性化部分, 加上先验, 没有逆深度的部分
+		// Step 1.2 边缘化fix的残差, 有边缘化对的, 使用的res_toZeroF减去线性化部分, 加上先验, 没有逆深度的部分
 		//bug: 这里根本就没有点参与了, 只有先验信息, 因为边缘化的和删除的点都不在了
-		//? 这里唯一的作用就是 把 p相关的置零
+		// 这里唯一的作用就是 把 p相关的置零
 		accumulateLF_MT(HL_top, bL_top, multiThreading); // 计算的是之前计算过得
 														 // p->Hdd_accLF = 0;
 														 // p->bd_accLF = 0;
 														 // p->Hcd_accLF =0 ;
 
-		//* 关于逆深度的Schur部分
+		// Step 1.3 关于逆深度的Schur部分
 		accumulateSCF_MT(H_sc, b_sc, multiThreading);
 
 		//TODO HM 和 bM是啥啊
-		//* 由于固定线性化点, 每次迭代更新残差
+		// Step 1.4 由于固定线性化点, 每次迭代更新残差
 		bM_top = (bM + HM * getStitchedDeltaF());
 
 		MatXX HFinal_top;
 		VecX bFinal_top;
-		// Step 2 如果是设置求解正交系统, 则把相对应的零空间部分Jacobian设置为0, 否则正常计算schur
+		// Step 2 使用不同的方法求解
+        // 如果是设置求解正交系统, 则把相对应的零空间部分Jacobian设置为0, 否则正常计算schur
         //; 实际上设置中不满足这个条件，因此不会执行这个if语句
 		if (setting_solverMode & SOLVER_ORTHOGONALIZE_SYSTEM)
 		{

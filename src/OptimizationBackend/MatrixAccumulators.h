@@ -781,18 +781,18 @@ namespace dso
 	};
 
 	/*
- * computes the outer sum of 10x2 matrices, weighted with a 2x2 matrix:
- * 			H = [x y] * [a b; b c] * [x y]^T
- * (assuming x,y are column-vectors).
- * numerically robust to large sums.
- */
+    * computes the outer sum of 10x2 matrices, weighted with a 2x2 matrix:
+    * 			H = [x y] * [a b; b c] * [x y]^T
+    * (assuming x,y are column-vectors).
+    * numerically robust to large sums.
+    */
 	//@ 这也没怎么用SSE都是直接算了
 	class AccumulatorApprox
 	{
 	public:
 		EIGEN_MAKE_ALIGNED_OPERATOR_NEW;
 
-		Mat1313f H;
+		Mat1313f H;  //; 13x13的hessian
 		size_t num;
 
 		inline void initialize()
@@ -821,19 +821,23 @@ namespace dso
 
 			int idx = 0;
 			for (int r = 0; r < 10; r++)
-				for (int c = r; c < 10; c++)
+            {
+                for (int c = r; c < 10; c++)
 				{
 					H(r, c) = H(c, r) = Data1m[idx];
 					idx++;
 				}
-
+            }
+				
 			idx = 0;
 			for (int r = 0; r < 10; r++)
+            {
 				for (int c = 0; c < 3; c++)
 				{
 					H(r, c + 10) = H(c + 10, r) = TopRight_Data1m[idx];
 					idx++;
 				}
+            }
 
 			H(10, 10) = BotRight_Data1m[0];
 			H(10, 11) = H(11, 10) = BotRight_Data1m[1];
@@ -925,8 +929,23 @@ namespace dso
 		}
 
 		/*
- * same as other method, just that x/y are composed of two parts, the first 4 elements are in x4/y4, the last 6 in x6/y6.
- */
+        * same as other method, just that x/y are composed of two parts, the first 4 elements are 
+          in x4/y4, the last 6 in x6/y6.
+        */
+        /**
+         * @brief 后端滑窗优化中，根据一个点的residual，计算它关联的两帧的13x13的hessian矩阵的左上角10*10
+         *   调用形式：	acc[tid][htIDX].update(
+                    rJ->Jpdc[0].data(), rJ->Jpdxi[0].data(),
+                    rJ->Jpdc[1].data(), rJ->Jpdxi[1].data(),
+                    rJ->JIdx2(0, 0), rJ->JIdx2(0, 1), rJ->JIdx2(1, 1));
+         * @param[in] x4  target帧的像素点 对 相机内参 导数，2x4中的第1行
+         * @param[in] x6  target帧的像素点 对 两帧之间相对位姿 导数，2x6中的第1行
+         * @param[in] y4  target帧的像素点 对 相机内参 导数，2x4中的第2行
+         * @param[in] y6  target帧的像素点 对 两帧之间相对位姿 导数，2x6中的第2行
+         * @param[in] a   (残差 对 target帧的像素点 导数 转置) * (残差 对 target帧的像素点 导数 转置)，2x2中(0, 0)
+         * @param[in] b   (残差 对 target帧的像素点 导数 转置) * (残差 对 target帧的像素点 导数 转置)，2x2中(0, 1)
+         * @param[in] c   (残差 对 target帧的像素点 导数 转置) * (残差 对 target帧的像素点 导数 转置)，2x2中(1, 1)
+         */
 		inline void update(
 			const float *const x4,
 			const float *const x6,
@@ -936,7 +955,11 @@ namespace dso
 			const float b,
 			const float c)
 		{
-
+            //; 1.注意Data就是13x13的hessian矩阵的左上角10x10部分
+            //;   涂金戈博客：https://www.cnblogs.com/JingeTU/p/8586163.html
+            //; 2.这里是在算+=，为什么不是等于？因为这两个相机之间可以构成很多残差，所以计算的是同一个hessian
+            // 下面这些计算也没有什么技巧，就是把矩阵展开来算就行，因为维度也不大。
+            // 注意这里仍然是只计算对角线和对角线以上的元素，因为是对称矩阵
 			Data[0] += a * x4[0] * x4[0] + c * y4[0] * y4[0] + b * (x4[0] * y4[0] + y4[0] * x4[0]);
 			Data[1] += a * x4[1] * x4[0] + c * y4[1] * y4[0] + b * (x4[1] * y4[0] + y4[1] * x4[0]);
 			Data[2] += a * x4[2] * x4[0] + c * y4[2] * y4[0] + b * (x4[2] * y4[0] + y4[2] * x4[0]);
@@ -1006,6 +1029,7 @@ namespace dso
 			numIn1++;
 			shiftUp(false);
 		}
+
 
 		//@ 计算10*3部分
 		inline void updateTopRight(

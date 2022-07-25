@@ -62,11 +62,12 @@ namespace dso
 		for (int k = min; k < max; k++)
 		{
 			PointFrameResidual *r = activeResiduals[k];
-            //; 调用这个函数，内部真正计算雅克比，返回值就是这个残差构成的能量值
+            // Step 1 调用这个函数，内部真正计算雅克比，返回值就是这个残差构成的能量值
 			(*stats)[0] += r->linearize(&Hcalib); // 线性化得到能量
 
 			if (fixLinearization) // 固定线性化（优化后执行）
 			{
+                // Step 2 调用这个函数，把上面linearize计算的雅克比传给后端EFResidual
 				r->applyRes(true); // 把值给efResidual
 
 				if (r->efResidual->isActive()) // 残差是in的
@@ -485,6 +486,8 @@ namespace dso
             //; 构建H矩阵所需要的所有中间变量
             // 所谓输出的中间量就是例如：残差对位姿的偏导的转置* 残差对逆深度的偏导等这类的东西。
             // 最后会在solveSystem函数里用到这些中间变量，其实所谓中间变量就是雅克比矩阵的一些组成元素。
+            //! 疑问：玄学啊，在上面linearizeAll函数内部，就已经调用了applyRes函数，而
+            //!  现在的applyRes_Reductor函数，内部也是调用applyRes这个函数啊？这不算了两次吗？
             applyRes_Reductor(true, 0, activeResiduals.size(), 0, 0);
         }   
 			

@@ -85,8 +85,20 @@ namespace dso
 		template <int mode>
 		void addPoint(EFPoint *p, EnergyFunctional const *const ef, int tid = 0);
 
+
 		//@ 获得最终的 H 和 b
-		void stitchDoubleMT(IndexThreadReduce<Vec10> *red, MatXX &H, VecX &b, EnergyFunctional const *const EF, bool usePrior, bool MT)
+        /**
+         * @brief 把上一步构造的所有的8*8的小的hessian累加起来，构造成最后整个大的hessian
+         * 
+         * @param[in] red 
+         * @param[in] H 
+         * @param[in] b 
+         * @param[in] EF 
+         * @param[in] usePrior 
+         * @param[in] MT 
+         */
+		void stitchDoubleMT(IndexThreadReduce<Vec10> *red, MatXX &H, VecX &b, 
+            EnergyFunctional const *const EF, bool usePrior, bool MT)
 		{
 			// sum up, splitting by bock in square.
 			if (MT)
@@ -118,8 +130,11 @@ namespace dso
 			}
 			else // 不使用多线程
 			{
+                //; 整个大的H和b的维度，假设是8个关键帧，每个关键帧是6个位姿+2个光度，即8个参数，整个滑窗还维护统一的4个内参
+                //; 所以状态变量维度是8 * 8 + 4 = 68维
 				H = MatXX::Zero(nframes[0] * 8 + CPARS, nframes[0] * 8 + CPARS);
-				b = VecX::Zero(nframes[0] * 8 + CPARS);
+				b = VecX::Zero(nframes[0] * 8 + CPARS);  //; 注意b = J'*e = 68xn * nx1 = 68x1，n是残差个数
+                //; 调用函数，把小hessian拼接成大的hessian
 				stitchDoubleInternal(&H, &b, EF, usePrior, 0, nframes[0] * nframes[0], 0, -1);
 			}
 
@@ -138,6 +153,7 @@ namespace dso
 				}
 			}
 		}
+
 
 		int nframes[NUM_THREADS]; //!< 每个线程的帧数
 

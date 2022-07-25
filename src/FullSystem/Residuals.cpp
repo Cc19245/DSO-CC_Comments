@@ -78,8 +78,10 @@ namespace dso
 
 	//@ 求对各个参数的导数, 和能量值
     /**
-     * @brief 优化的时候，计算点的残差对各个优化变量的雅克比
-     * 
+     * @brief 后端滑窗优化的时候，计算点的残差对各个优化变量的雅克比
+     *   1.在计算 RawResidualJacobian 时，是计算 PointFrameResidual 的 J，尔后会将这个 J 转移到
+     *     EFResidual 的 J，并且计算 EFResidual::JpJdF
+     *   2.参考涂金戈的博客，写的非常好：https://www.cnblogs.com/JingeTU/p/8395046.html
      * @param[in] HCalib 
      * @return double 
      */
@@ -112,9 +114,10 @@ namespace dso
 		float d_d_x, d_d_y;
 
 		{
-			float drescale, u, v, new_idepth;
-			float Ku, Kv;
-			Vec3f KliP;
+            //; uv是target帧上的归一化平面坐标，dresclae是/rou_2 * /rou_1^-1, new_idepth就是/rou_2
+			float drescale, u, v, new_idepth;  
+			float Ku, Kv;  //; Ku,Kv是target帧上的像素坐标
+			Vec3f KliP;  //; KliP是host帧的归一化平面上的点
 
             // Step 1 把当前点利用 线性化点处的状态 投影到target帧上
 			if (!projectPoint(point->u, point->v, point->idepth_zero_scaled, 0, 0, HCalib,
@@ -130,11 +133,12 @@ namespace dso
 
             // Step 2 求解像素点对各个状态的雅克比
 			//* 像素点对host上逆深度求导(由于乘了SCALE_IDEPTH倍, 因此乘上)
-            //; 1. 像素点Pj'对逆深度求导，注意这里前面没有乘像素梯度，所以并不是最终的雅克比
+            // Step 2.1 像素点Pj'对逆深度求导，Vec2f Jpdd，2x1
 			// diff d_idepth
 			d_d_x = drescale * (PRE_tTll_0[0] - PRE_tTll_0[2] * u) * SCALE_IDEPTH * HCalib->fxl();
 			d_d_y = drescale * (PRE_tTll_0[1] - PRE_tTll_0[2] * v) * SCALE_IDEPTH * HCalib->fyl();
 
+            // Step 2.2 像素点Pj'对相机内参求导，VecCf Jpdc[2]，2x4
 			//* 像素点对相机内参fx fy cx cy的导数第一部分
             //; 2.1.像素点对内参求导的反投影部分，包括对坐标u和v两部分的求导
             //! 疑问：怎么感觉下面的代码和公式推导有点对不上啊？哪里有点问题好像？
@@ -143,35 +147,37 @@ namespace dso
 			// [1]: 1/Pz'*Py*fx/fy*(R21*Px'/Pz' - R01)
 			// [2]: 1/Pz'*(R20*Px'/Pz' - R00)
 			// [3]: 1/Pz'*fx/fy*(R21*Px'/Pz' - R01)
-			d_C_x[2] = drescale * (PRE_RTll_0(2, 0) * u - PRE_RTll_0(0, 0));
-			d_C_x[3] = HCalib->fxl() * drescale * (PRE_RTll_0(2, 1) * u - PRE_RTll_0(0, 1)) * HCalib->fyli();
-			d_C_x[0] = KliP[0] * d_C_x[2];
-			d_C_x[1] = KliP[1] * d_C_x[3];
+            //; 这个地方涂金戈博客好像多个1?
+            //; 解答：不是的，涂金戈博客算的是最后的结果，而这里算的是中间结果，所以都缺一点，但是在下面2.2的地方就都补上了
+			d_C_x[2] = drescale * (PRE_RTll_0(2, 0) * u - PRE_RTll_0(0, 0));   //; 涂金戈博客 多1
+			d_C_x[3] = HCalib->fxl() * drescale * (PRE_RTll_0(2, 1) * u - PRE_RTll_0(0, 1)) * HCalib->fyli();  //; 涂金戈博客 相同
+			d_C_x[0] = KliP[0] * d_C_x[2];  //; 涂金戈博客 多u2'
+			d_C_x[1] = KliP[1] * d_C_x[3];  //; 涂金戈博客 相同
 
 			// [0]: 1/Pz'*Px*fy/fy*(R20*Py'/Pz' - R10)
 			// [1]: 1/Pz'*Py*(R21*Py'/Pz' - R11)
 			// [2]: 1/Pz'*fy/fy*(R20*Py'/Pz' - R10)
 			// [3]: 1/Pz'*(R21*Py'/Pz' - R11)
-			d_C_y[2] = HCalib->fyl() * drescale * (PRE_RTll_0(2, 0) * v - PRE_RTll_0(1, 0)) * HCalib->fxli();
-			d_C_y[3] = drescale * (PRE_RTll_0(2, 1) * v - PRE_RTll_0(1, 1));
-			d_C_y[0] = KliP[0] * d_C_y[2];
-			d_C_y[1] = KliP[1] * d_C_y[3];
+			d_C_y[2] = HCalib->fyl() * drescale * (PRE_RTll_0(2, 0) * v - PRE_RTll_0(1, 0)) * HCalib->fxli();  //; 涂金戈博客 相同
+			d_C_y[3] = drescale * (PRE_RTll_0(2, 1) * v - PRE_RTll_0(1, 1));   //; 涂金戈博客 多1
+			d_C_y[0] = KliP[0] * d_C_y[2];   //; 涂金戈博客 多v2'
+			d_C_y[1] = KliP[1] * d_C_y[3];   //; 涂金戈博客 相同
 
             //; 2.2.像素点对内参求导的投影部分
 			//* 第二部分 同样project时候一样使用了scaled的内参
 			// [Px'/Pz'  0  1  0;
 			//  0  Py'/Pz'  0  1]
-			d_C_x[0] = (d_C_x[0] + u) * SCALE_F;
-			d_C_x[1] *= SCALE_F;
-			d_C_x[2] = (d_C_x[2] + 1) * SCALE_C;
+			d_C_x[0] = (d_C_x[0] + u) * SCALE_F;  //; 对比涂金戈博客，增加u2'
+			d_C_x[1] *= SCALE_F;            
+			d_C_x[2] = (d_C_x[2] + 1) * SCALE_C;  //; 对比涂金戈博客，增加1
 			d_C_x[3] *= SCALE_C;
 
 			d_C_y[0] *= SCALE_F;
-			d_C_y[1] = (d_C_y[1] + v) * SCALE_F;
-			d_C_y[2] *= SCALE_C;
-			d_C_y[3] = (d_C_y[3] + 1) * SCALE_C;
+			d_C_y[1] = (d_C_y[1] + v) * SCALE_F;  //; 对比涂金戈博客，增加v2'
+			d_C_y[2] *= SCALE_C; 
+			d_C_y[3] = (d_C_y[3] + 1) * SCALE_C;  //; 对比图净额博客，增加1
 
-            //; 3.像素点对位姿的导数
+            // Step 2.3 像素点Pj'对位姿求导，Vec6f Jpdxi[2]， 2x6
 			//* 像素点对位姿的导数, 位移在前!
 			// 公式见初始化那儿
 			d_xi_x[0] = new_idepth * HCalib->fxl();
@@ -191,15 +197,15 @@ namespace dso
 
         //; 把上面求导的中间变量结果放到类成员变量中
 		{
-            // 位姿导数
+            // 新帧上像素坐标对位姿导数, 2x6
 			J->Jpdxi[0] = d_xi_x;
 			J->Jpdxi[1] = d_xi_y;
 
-            // 相机内参导数
+            // 新帧上像素坐标对相机内参导数，2x4
 			J->Jpdc[0] = d_C_x;
 			J->Jpdc[1] = d_C_y;
 
-            // 逆深度导数
+            // 新帧上像素坐标对逆深度导数，2x1
 			J->Jpdd[0] = d_d_x;
 			J->Jpdd[1] = d_d_y;
 		}
@@ -265,19 +271,22 @@ namespace dso
 				// 残差 res*w*sqrt(hw)
 				J->resF[idx] = residual * hw;
 
+                // Step 2.4 Pattern的残差对像素点Pj'求导，VecNRf JIdx[2]， 2x8
 				// 图像导数 dx dy
-                //; 图像梯度
 				J->JIdx[0][idx] = hitColor[1];
 				J->JIdx[1][idx] = hitColor[2];
 
+                // Step 2.5 Pattern的残差对广度求导，VecNRf JabF[2]， 2x8、
 				// 对光度合成后a b的导数 [Ii-b0  1]
 				// Ij - a*Ii - b  (a = tj*e^aj / ti*e^ai,   b = bj - a*bi)
 				//bug 正负号有影响 ???
-                //; 对光度参数求导，其中a是固定了线性化点？
+                //! 注意：这部分和涂金戈博客对不上，它博客中也说了。看上面公益群也说了好像有个bug?
+                // 对光度参数求导，其中a是固定了线性化点？
 				J->JabF[0][idx] = drdA * hw;
 				J->JabF[1][idx] = hw;
 
-                //! 疑问：没看懂，这在算啥啊？？？
+                
+                // Step 2.6 这里就是在计算涂金戈博客中写的789部分，比如2x8 * 8x2 = 2x2，所以这里用的是+=来累加
 				// dIdx&dIdx hessian block
 				JIdxJIdx_00 += hitColor[1] * hitColor[1];
 				JIdxJIdx_11 += hitColor[2] * hitColor[2];
@@ -301,7 +310,7 @@ namespace dso
 			}
 		} // 遍历pattern结束
 
-        //! 疑问：这赋值的是什么东西啊？？？
+        //; 把上面pattern累加的2x8 * 8x2 = 2*2 等结果存入到类成员变量中
 		// 都是对host到target之间的变化量导数
 		J->JIdx2(0, 0) = JIdxJIdx_00;
 		J->JIdx2(0, 1) = JIdxJIdx_10;
@@ -382,7 +391,7 @@ namespace dso
 			if (state_NewState == ResState::IN) // && )
 			{
 				efResidual->isActiveAndIsGoodNEW = true;
-				//? 指针好恶心, 计算好了调用这个函数
+				//; 终点：takeDataF，把PointFrameResidual中计算的雅克比中间量传给EF后端
 				efResidual->takeDataF(); // 从当前取jacobian数据
 			}
 			else

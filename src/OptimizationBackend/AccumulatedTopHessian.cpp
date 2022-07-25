@@ -35,8 +35,12 @@ namespace dso
 
 	//@ 计算残差对应的 Hessian和Jres
     /**
-     * @brief 
-     * 
+     * @brief  计算每个点和其他帧上的点构成的残差的对应的hessian, 注意一共8*8个hessian,
+     *   其内部会判断这个残差是和哪两帧构成的，从而在正确的8*8数组的位置累加计算的hessian
+     *  参考：1.涂金戈博客 https://www.cnblogs.com/JingeTU/p/8586163.html
+     *         其中一些变量是在之前线性化的时候计算的雅克比，变量定义见涂金戈博客：
+     *          https://www.cnblogs.com/JingeTU/p/8395046.html
+     *       2.深蓝学院PPT P36
      * @tparam mode 
      * @param[in] p 
      * @param[in] ef 
@@ -54,6 +58,9 @@ namespace dso
 		float Hdd_acc = 0;
 		VecCf Hcd_acc = VecCf::Zero();
 
+        //; 遍历这个点的所有残差
+        //! 疑问：这个所有残差是什么意思？是这个点和其他帧上的点构成的残差？那岂不是同一个残差要多算一遍？
+        //! 解答：目前感觉是这样的，因为看后面计算hessian的时候就能发现，他存储的hessian是8*8个，重复了一半
 		for (EFResidual *r : p->residualsAll) // 对该点所有残差遍历一遍
 		{
 			//* 这个和运行的mode不一样, 又混了.....
@@ -78,17 +85,24 @@ namespace dso
 			// 	printf("yeah I'm IN !");
 			// }
 
+            //; 取出之间计算的雅克比中间量
 			RawResidualJacobian *rJ = r->J; // 导数
 			//* ID 来控制不同帧之间的变量, 区分出相同两帧 但是host target角色互换的
 			int htIDX = r->hostIDX + r->targetIDX * nframes[tid];
 			Mat18f dp = ef->adHTdeltaF[htIDX]; // 位姿+光度a b
 
+            //; VecNRf 8x1向量
 			VecNRf resApprox;
-			if (mode == 0)
+            //; active活跃点的情况最简单，直接就是之前计算的雅克比
+			if (mode == 0)  
 				resApprox = rJ->resF;
-			if (mode == 2) // 边缘化时使用的
+            //; marginalize边缘化使用的res_toZeroF 在EFResidual::fixLinearizationF()赋值
+			if (mode == 2)  
 				resApprox = r->res_toZeroF;
-			if (mode == 1)
+
+            //; linearized线性化的情况，涂金戈的博客(https://www.cnblogs.com/JingeTU/p/8586163.html)
+            //; 中详细阐述了，实际上这个if是一定不会满足的，但是博客中他仍然给出了下面代码的解析
+			if (mode == 1)  
 			{
 				//* 因为计算的是旧的, 由于更新需要重新计算
 				// compute Jp*delta
@@ -99,7 +113,7 @@ namespace dso
 
 				for (int i = 0; i < patternNum; i += 4)
 				{
-					//! PATTERN: rtz = res_toZeroF - [JI*Jp Ja]*delta.
+					// PATTERN: rtz = res_toZeroF - [JI*Jp Ja]*delta.
 					//* 线性更新b值, 边缘化量, 每次在res_toZeroF上减
 					__m128 rtz = _mm_load_ps(((float *)&r->res_toZeroF) + i);
 					rtz = _mm_add_ps(rtz, _mm_mul_ps(_mm_load_ps(((float *)(rJ->JIdx)) + i), Jp_delta_x));
@@ -110,28 +124,48 @@ namespace dso
 				}
 			}
 
+            // Step 计算Hessian矩阵， 对应涂金戈上述博客，也对应深蓝PPT中P36
+            /* 
+             * 1.这里的 Hessian 矩阵是存储了两个帧之间的相互信息，所有的信息存储在 AccumulatedTopHessianSSE::acc 
+             *   中，acc是一个数组，大小是 8*8 个，位置 (i, j) 上对应的是 i 帧与 j 帧的相互信息。
+             * 2.AccumulatorApprox 也就是AccumulatedTopHessianSSE::acc 变量的“基础”类型。
+             *   这个类型对应着 13x13 的矩阵
+             */
 			// need to compute JI^T * r, and Jab^T * r. (both are 2-vectors).
 			Vec2f JI_r(0, 0);
 			Vec2f Jab_r(0, 0);
 			float rr = 0;
+            // Step 1.1 注意这里把残差乘到了梯度上，是为了计算13x13的hessian的b部分做准备的，也就是最右边一列，
+            //?         因为这部分需要乘以r，所以下面乘了resApprox，而resApprox其实就是pattern的8x1残差
 			for (int i = 0; i < patternNum; i++)
 			{
+                //; resApprox是每个点周围8个pattern的残差，8x1向量
+                //; 这里涂金戈博客好像说的不对，这里就是2x8的残差对像素坐标 * 8x1的残差，得到残差对像素坐标的雅克比的和
 				JI_r[0] += resApprox[i] * rJ->JIdx[0][i];
 				JI_r[1] += resApprox[i] * rJ->JIdx[1][i];
+                //; 同理这里就是2x8的残差对广度系数 * 8x1的残差，得到残差对光度系数的和
 				Jab_r[0] += resApprox[i] * rJ->JabF[0][i];
 				Jab_r[1] += resApprox[i] * rJ->JabF[1][i];
+                //; 这里就是1x8的残差 * 8x1的残差，得到最后残差的和
 				rr += resApprox[i] * resApprox[i];
 			}
 
+            // Step 1.2 计算H和b, 在同一个13x13的矩阵中计算
+            //; 计算左上角10x10矩阵，传入的是 target帧像素对相机内参偏导、target帧像素对相对位姿偏导、残差对target帧像素偏导
 			//* 计算hessian 10*10矩阵, [位姿+相机参数]
 			acc[tid][htIDX].update(
 				rJ->Jpdc[0].data(), rJ->Jpdxi[0].data(),
 				rJ->Jpdc[1].data(), rJ->Jpdxi[1].data(),
+                //; 注意这里传入的残差对像素坐标的偏导，已经是一个pattern内的和了
 				rJ->JIdx2(0, 0), rJ->JIdx2(0, 1), rJ->JIdx2(1, 1));
+            
+            //; 计算右下角3x3矩阵
 			//* 计算 3*3 矩阵, [光度a, 光度b, 残差r]
 			acc[tid][htIDX].updateBotRight(
 				rJ->Jab2(0, 0), rJ->Jab2(0, 1), Jab_r[0],
 				rJ->Jab2(1, 1), Jab_r[1], rr);
+
+            //; 计算右上角10x3矩阵
 			//* 计算 10*3 矩阵, [位姿+相机参数]*[光度a, 光度b, 残差r]
 			acc[tid][htIDX].updateTopRight(
 				rJ->Jpdc[0].data(), rJ->Jpdxi[0].data(),
@@ -140,10 +174,24 @@ namespace dso
 				rJ->JabJIdx(1, 0), rJ->JabJIdx(1, 1),
 				JI_r[0], JI_r[1]);
 
-			Vec2f Ji2_Jpdd = rJ->JIdx2 * rJ->Jpdd;
+            /**
+             * 函数的目标除了计算不同帧之间的相互信息（变量acc），还需要计算每一个点对于所有 residual 的信息和。
+             * 即EFPoint中的成员变量Hdd_accAF, bd_accAF, Hcd_accAF, Hdd_accLF, bd_accLF, Hcd_accLF，
+             * 如果这个点是 active 点，那么设置AF相关的变量，否则设置LF相关变量，如果是 marginalize 点，
+             * 清除AF相关变量的信息。这三个成员变量将用于计算逆深度的优化量。局部变量Hdd_acc, bd_acc, 
+             * Hcd_acc对应着这些EFPoint的成员变量，最后赋值到成员变量。
+             */
+            // Step 2 计算后面舒尔补部分要用的，和深蓝PPT P36对应
+            //?     下面使用 += 就是这个点和其他帧上的点构成的残差，都可以算作这个点的逆深度的hessain部分，所以是+=
+			Vec2f Ji2_Jpdd = rJ->JIdx2 * rJ->Jpdd;  // 中间变量，无意义
+            //; 1x1, (残差 * 残差对像素坐标的雅克比) * 像素坐标对逆深度的雅克比 = 残差 * 残差对逆深度的雅克比，
+            //;  实际这个就是hessian中最右边一列和逆深度相关的部分
 			bd_acc += JI_r[0] * rJ->Jpdd[0] + JI_r[1] * rJ->Jpdd[1];		  //* 残差*逆深度J
+            //; 1x1, 这个实际就是 残差对逆深度雅克比' * 残差对逆深度雅克比，也就是Hessian中行列都是逆深度位置的部分
 			Hdd_acc += Ji2_Jpdd.dot(rJ->Jpdd);								  //* 光度对逆深度hessian
-			Hcd_acc += rJ->Jpdc[0] * Ji2_Jpdd[0] + rJ->Jpdc[1] * Ji2_Jpdd[1]; //* 光度对内参J*光度对逆深度J
+			//; 4x1, 这个确实是 残差对相机内参雅克比' * 残差对逆深度雅克比 = 4x1 * 1x1 = 4x1
+            //! 疑问：这个有啥意义啊？
+            Hcd_acc += rJ->Jpdc[0] * Ji2_Jpdd[0] + rJ->Jpdc[1] * Ji2_Jpdd[1]; //* 光度对内参J*光度对逆深度J
 
 			nres[tid]++;
 		}
@@ -238,13 +286,27 @@ namespace dso
 		}
 	}
 
+
 	//@ 构造Hessian矩阵, b=Jres矩阵
+    /**
+     * @brief 把8*8个小的hessian矩阵，拼接成最后大的hessian矩阵，为后面求解做准备
+     * 
+     * @param[in] H  输出，拼接完成的H，维度68x68
+     * @param[in] b  输出，拼接完成的b，维度68x1
+     * @param[in] EF 能量函数对象的指针
+     * @param[in] usePrior 是否使用先验信息，调用的时候传入的是true
+     * @param[in] min  从最小哪帧开始遍历
+     * @param[in] max  遍历截止到哪帧
+     * @param[in] stats 
+     * @param[in] tid 对于单线程，传入-1
+     */
 	void AccumulatedTopHessianSSE::stitchDoubleInternal(
 		MatXX *H, VecX *b, EnergyFunctional const *const EF, bool usePrior,
 		int min, int max, Vec10 *stats, int tid)
 	{
 		int toAggregate = NUM_THREADS;
 		// 不用多线程, 为啥不能统一一下
+        //; 如果=-1，说明是单线程
 		if (tid == -1)
 		{
 			toAggregate = 1;
@@ -252,55 +314,88 @@ namespace dso
 		} // special case: if we dont do multithreading, dont aggregate.
 		if (min == max)
 			return;
-
+        
+        // Step 循环是遍历所有可能的 (host_frame,target_frame) 组合
 		for (int k = min; k < max; k++) // 帧的范围 最大nframes[0]*nframes[0]
 		{
+            //; 一个取整，一个取余，得到host_id和target_id
 			int h = k % nframes[0]; // 和两个循环一样
 			int t = k / nframes[0];
 
 			int hIdx = CPARS + h * 8; // 起始元素id
 			int tIdx = CPARS + t * 8;
+            //; 总id，靠，这不就是k吗？
 			int aidx = h + nframes[0] * t; // 总的id
 
-			assert(aidx == k);
+			assert(aidx == k);   // 确实是k, 无语，再算一下干啥？
 
-			MatPCPC accH = MatPCPC::Zero(); // (8+4+1)*(8+4+1)矩阵
+			MatPCPC accH = MatPCPC::Zero(); // (8+4+1)*(8+4+1)矩阵，也就是13*13的hessian矩阵
 
+            // Step 1 内层循环累积计算accH，这个循环是用于累加多个线程的结果，accH就是acc[h+nframes*t]
 			for (int tid2 = 0; tid2 < toAggregate; tid2++)
 			{
-				acc[tid2][aidx].finish();
+				acc[tid2][aidx].finish();  //; 注意这里就是从acc中拿出来对应的8*8位置的那个13x13的hessian矩阵
 				if (acc[tid2][aidx].num == 0)
 					continue;
 				accH += acc[tid2][aidx].H.cast<double>(); // 不同线程之间的加起来
 			}
-			//* 相对的量通过adj变成绝对的量, 并累加到 H, b 中
-			H[tid].block<8, 8>(hIdx, hIdx).noalias() += EF->adHost[aidx] * accH.block<8, 8>(CPARS, CPARS) * EF->adHost[aidx].transpose();
 
-			H[tid].block<8, 8>(tIdx, tIdx).noalias() += EF->adTarget[aidx] * accH.block<8, 8>(CPARS, CPARS) * EF->adTarget[aidx].transpose();
+			// Step 相对的量通过adj变成绝对的量, 并累加到 H, b 中
+            //?   关于相对相对量和绝对量转换这部分，在涂金戈博客最后有讲解：https://www.cnblogs.com/JingeTU/p/8586163.html
+            //; 注意下面为什么从(4,4)开始取？因为每个小的hessian都会计算关于内参部分的hessian，并且这部分位于13x13的
+            //;  左上角4x4位置。而在整个68x68的大hessian中，只有一个4x4的内参，所这里先累加帧帧之间的位姿+光度(8x8)部分，
+            //;  最后再累加相机内参部分。
+            // Step 2 H部分累加
+            //! 注意：好像仍然只是算了对角线的一边，另一边没有算？
+            //   Step 2.1 单纯的相机位姿+光度部分
+            // 1.host-host部分，比如(4+8*2, 4+8*2)位置
+			H[tid].block<8, 8>(hIdx, hIdx).noalias() += 
+                EF->adHost[aidx] * accH.block<8, 8>(CPARS, CPARS) * EF->adHost[aidx].transpose();
+            // 2.target-host部分，比如(4+8*5, 4+8*2)位置
+			H[tid].block<8, 8>(tIdx, tIdx).noalias() += 
+                EF->adTarget[aidx] * accH.block<8, 8>(CPARS, CPARS) * EF->adTarget[aidx].transpose();
+            // 3.host-target部分，比如(4+8*2, 4+8*5)位置
+			H[tid].block<8, 8>(hIdx, tIdx).noalias() += 
+                EF->adHost[aidx] * accH.block<8, 8>(CPARS, CPARS) * EF->adTarget[aidx].transpose();
+            
+            //   Step 2.2 相机位姿+光度 和 相机内参交叉的部分
+            // 1.host-target部分，比如(4+8*2, 0)位置
+			H[tid].block<8, CPARS>(hIdx, 0).noalias() += 
+                EF->adHost[aidx] * accH.block<8, CPARS>(CPARS, 0);
+            // 2.target-cam部分，比如(4+8*5, 0)位置
+			H[tid].block<8, CPARS>(tIdx, 0).noalias() += 
+                EF->adTarget[aidx] * accH.block<8, CPARS>(CPARS, 0);
+            
+            //   Step 2.3 相机内参单独部分
+			H[tid].topLeftCorner<CPARS, CPARS>().noalias() += 
+                accH.block<CPARS, CPARS>(0, 0);
 
-			H[tid].block<8, 8>(hIdx, tIdx).noalias() += EF->adHost[aidx] * accH.block<8, 8>(CPARS, CPARS) * EF->adTarget[aidx].transpose();
 
-			H[tid].block<8, CPARS>(hIdx, 0).noalias() += EF->adHost[aidx] * accH.block<8, CPARS>(CPARS, 0);
+            // Step 3 b部分累加
+			b[tid].segment<8>(hIdx).noalias() += 
+                EF->adHost[aidx] * accH.block<8, 1>(CPARS, CPARS + 8);
 
-			H[tid].block<8, CPARS>(tIdx, 0).noalias() += EF->adTarget[aidx] * accH.block<8, CPARS>(CPARS, 0);
+			b[tid].segment<8>(tIdx).noalias() += 
+                EF->adTarget[aidx] * accH.block<8, 1>(CPARS, CPARS + 8);
 
-			H[tid].topLeftCorner<CPARS, CPARS>().noalias() += accH.block<CPARS, CPARS>(0, 0);
-
-			b[tid].segment<8>(hIdx).noalias() += EF->adHost[aidx] * accH.block<8, 1>(CPARS, CPARS + 8);
-
-			b[tid].segment<8>(tIdx).noalias() += EF->adTarget[aidx] * accH.block<8, 1>(CPARS, CPARS + 8);
-
-			b[tid].head<CPARS>().noalias() += accH.block<CPARS, 1>(0, CPARS + 8); //! 残差 * 内参
+			b[tid].head<CPARS>().noalias() += 
+                accH.block<CPARS, 1>(0, CPARS + 8); // 残差 * 内参
 		}
 
 		// only do this on one thread.
+        //; usePrior调用的时候传入的是true，表示有大的先验信息
 		if (min == 0 && usePrior)
 		{
-			H[tid].diagonal().head<CPARS>() += EF->cPrior;								 //! hessian先验
-			b[tid].head<CPARS>() += EF->cPrior.cwiseProduct(EF->cDeltaF.cast<double>()); //! H*delta 更新残差
-			for (int h = 0; h < nframes[tid]; h++)
+            //; 以下内容参见深蓝PPT P40, 可以对应的很好
+            // 1.相机内参的先验信息
+			H[tid].diagonal().head<CPARS>() += EF->cPrior;		// hessian先验
+            //; b就是先验 H * 当前值和先验的残差e
+			b[tid].head<CPARS>() += EF->cPrior.cwiseProduct(EF->cDeltaF.cast<double>()); // H*delta 更新残差
+			
+            // 2.每个帧的位姿和光度先验信息
+            for (int h = 0; h < nframes[tid]; h++)
 			{
-				H[tid].diagonal().segment<8>(CPARS + h * 8) += EF->frames[h]->prior; //! hessian先验
+				H[tid].diagonal().segment<8>(CPARS + h * 8) += EF->frames[h]->prior; // hessian先验
 				b[tid].segment<8>(CPARS + h * 8) += EF->frames[h]->prior.cwiseProduct(EF->frames[h]->delta_prior);
 			}
 		}
