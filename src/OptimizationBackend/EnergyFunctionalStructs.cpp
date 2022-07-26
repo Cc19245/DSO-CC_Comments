@@ -49,6 +49,7 @@ namespace dso
 		std::swap<RawResidualJacobian *>(J, data->J);
 
         // Step 2 利用前端计算的雅克比，再算一些计算hessian的时候需要的中间量，即JpJdF
+    //! 7.26增：JpJdF[1:6]代表hessian中的Hfd, JpJdF[7:8]代表b中的bf，这个是给后端逆深度舒尔消元使用的
         //; 1.注意下面的计算和两个博客中的是吻合的，涂金戈博客中写的是  图像导数 * (图像导数 * 逆深度导数) = 2x8 * 8x1 = 2x1
         //;   这不过这里代码中实际用的是 (图像导数 * 图像导数) * 逆深度导数 = 2x2 * 2x1 = 2x1
 		// 图像导数 * 图像导数 * 逆深度导数
@@ -59,11 +60,12 @@ namespace dso
         //;   而这里复用了上面刚计算的结果，是计算了 位姿导数 * (图像导数 * 图像导数 * 逆深度导数)
         // 位姿导数 * 图像导数 * 图像导数 * 逆深度导数
 		for (int i = 0; i < 6; i++)
-			JpJdF[i] = J->Jpdxi[0][i] * JI_JI_Jd[0] + J->Jpdxi[1][i] * JI_JI_Jd[1];
+        {
+            JpJdF[i] = J->Jpdxi[0][i] * JI_JI_Jd[0] + J->Jpdxi[1][i] * JI_JI_Jd[1];
+        }   
 
         //; 3.同理这里仍然是和涂金戈博客中稍有不同，涂金戈博客简化成了  图像导数 * (逆深度导数 * 光度导数)
         //;   但是这里用的是(图像导数 * 逆深度导数) * 光度导数
-        //! 下面写的这些导数好像也不太对，不管了，反正和涂金戈的博客可以对上
 		// 图像导数 * 逆深度导数 * 光度导数
 		JpJdF.segment<2>(6) = J->JabJIdx * J->Jpdd;
 	}
@@ -72,9 +74,14 @@ namespace dso
 	//@ 从 FrameHessian 中提取数据
 	void EFFrame::takeData()
 	{
-		prior = data->getPrior().head<8>();									// 得到先验状态, 主要是光度仿射变换
-		delta = data->get_state_minus_stateZero().head<8>();				// 状态与FEJ零状态之间差
-		delta_prior = (data->get_state() - data->getPriorZero()).head<8>(); // 状态与先验之间的差 //? 可先验是0啊?
+        // 得到先验状态, 主要是光度仿射变换
+		prior = data->getPrior().head<8>();	  
+
+        // 状态与FEJ零状态之间差
+		delta = data->get_state_minus_stateZero().head<8>();	
+
+        // 状态与先验之间的差 //? 可先验是0啊?
+		delta_prior = (data->get_state() - data->getPriorZero()).head<8>(); 
 
 		assert(data->frameID != -1);
 

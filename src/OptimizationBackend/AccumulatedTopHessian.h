@@ -135,22 +135,28 @@ namespace dso
                 //; 所以状态变量维度是8 * 8 + 4 = 68维
 				H = MatXX::Zero(nframes[0] * 8 + CPARS, nframes[0] * 8 + CPARS);
 				b = VecX::Zero(nframes[0] * 8 + CPARS);  //; 注意b = J'*e = 68xn * nx1 = 68x1，n是残差个数
-                //; 调用函数，把小hessian拼接成大的hessian
+                // Step 1 调用函数，把小hessian拼接成大的hessian，同时把小hessian中的相对状态转成绝对状态
 				stitchDoubleInternal(&H, &b, EF, usePrior, 0, nframes[0] * nframes[0], 0, -1);
 			}
 
+            // Step 2 沿着对角线复制
 			// make diagonal by copying over parts.
 			for (int h = 0; h < nframes[0]; h++)
 			{
-				int hIdx = CPARS + h * 8;
+				int hIdx = CPARS + h * 8;  
+
+                // Step 2.1 先拷贝内参位置的部分，也就是上面4行和左边4列是对称的
+                //; noalias声明没有混淆，否则可能会出现赋值错误的情况
                 // [内参, 位姿] 对称部分
 				H.block<CPARS, 8>(0, hIdx).noalias() = H.block<8, CPARS>(hIdx, 0).transpose(); 
 
+                // Step 2.2 然后以当前帧为host帧，它后面的帧为target帧，拷贝相机状态(位姿+光度)部分
 				for (int t = h + 1; t < nframes[0]; t++)
 				{
 					int tIdx = CPARS + t * 8;
-					// 对于位姿, 相同两帧之间的Hessian需要加起来, 即对称位置的, (J差负号, 平方之后就好了)
+					// 对于位姿, 相同两帧之间的Hessian需要加起来, 即对称位置的, (J差负号, J'J平方之后负号就消掉了)
 					H.block<8, 8>(hIdx, tIdx).noalias() += H.block<8, 8>(tIdx, hIdx).transpose();
+                    //; 注意上面已经加完了，所以和它对称的位置直接赋值就可以了
 					H.block<8, 8>(tIdx, hIdx).noalias() = H.block<8, 8>(hIdx, tIdx).transpose();
 				}
 			}

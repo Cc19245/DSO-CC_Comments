@@ -241,7 +241,7 @@ namespace dso
     /**
      * @brief 更新状态变量，并通过步长判断是否已经接近最优解，如果是则可以停止本次优化了
      * 
-     * @param[in] stepfacC 
+     * @param[in] stepfacC  这些参数都是各个变量更新的步长，实际上调用的时候传入的都是1
      * @param[in] stepfacT 
      * @param[in] stepfacR 
      * @param[in] stepfacA 
@@ -251,9 +251,6 @@ namespace dso
      */
 	bool FullSystem::doStepFromBackup(float stepfacC, float stepfacT, float stepfacR, float stepfacA, float stepfacD)
 	{
-		//	float meanStepC=0,meanStepP=0,meanStepD=0;
-		//	meanStepC += Hcalib.step.norm();
-
 		//* 相当于步长了
 		Vec10 pstepfac;
 		pstepfac.segment<3>(0).setConstant(stepfacT);
@@ -295,25 +292,33 @@ namespace dso
 		//; 普通更新状态
         else
 		{ 
+            // Step 1 相机内参更新：在原状态基础上 + 本次更新步长
             //* 相机内参更新状态
 			Hcalib.setValue(Hcalib.value_backup + stepfacC * Hcalib.step);
-			//* 相机位姿, 光度参数更新
+
+            // Step 2 滑窗中相机状态(位姿、光度)、点的逆深度更新
+            //* 相机位姿, 光度参数更新
 			for (FrameHessian *fh : frameHessians)
 			{
+                //; 1.相机状态更新，传入的值就是本次更新后，相对于线性化点的状态增量
 				fh->setState(fh->state_backup + pstepfac.cwiseProduct(fh->step));
+
 				sumA += fh->step[6] * fh->step[6];
 				sumB += fh->step[7] * fh->step[7];
 				sumT += fh->step.segment<3>(0).squaredNorm();
 				sumR += fh->step.segment<3>(3).squaredNorm();
 
+                //; 2.遍历这个帧上的所有点，对逆深度进行更新
 				//* 点的逆深度更新, 注意点逆深度没使用FEJ
 				for (PointHessian *ph : fh->pointHessians)
 				{
+                    //; 设置这次更新后的逆深度
 					ph->setIdepth(ph->idepth_backup + stepfacD * ph->step);
 					sumID += ph->step * ph->step;
 					sumNID += fabsf(ph->idepth_backup);
 					numID++;
 
+                    //; 设置点的线性化点，同样也是最新的状态，也就是说点的逆深度部分并没有使用FEJ
 					ph->setIdepthZero(ph->idepth_backup + stepfacD * ph->step);
 				}
 			}
@@ -335,9 +340,10 @@ namespace dso
 				   sqrtf(sumT) * sumNID / (0.00005 * setting_thOptIterations));
         }
 
+        // Step 3 置位相对状态标志位：因为此时更新了最新状态，但是还没有重新计算最新状态和线性化点状态的差值
 		EFDeltaValid = false;
 
-        //! 重要：更新相对位姿和光度
+        // Step 4 紧接着上面，最新状态更新了，那么重新计算最新状态和线性化点状态的差值
 		setPrecalcValues(); // 更新相对位姿, 光度
 
 		// 步长小于阈值则可以停止了
@@ -568,16 +574,19 @@ namespace dso
 					stepsize = 0.25;
 			}
 
-			// Step 3.3 更新状态
+			// Step 3.3 更新状态，更新之后里面会接着判断最新状态和线性化点之间的状态差值
 			//* 更新变量, 判断是否停止
+            //; stepsize最后传入都是1，不用管
 			bool canbreak = doStepFromBackup(stepsize, stepsize, stepsize, stepsize, stepsize);
 
+            // Step 3.4 使用更新后的状态重新计算能量
 			// eval new energy!
 			//* 更新后重新计算
-            //; 更新状态后重新计算所有的能量，包括没有固定线性化点的能量、先验(或者固定线性化点？)的能量、边缘化先验的能量？
-			Vec3 newEnergy = linearizeAll(false);
-			double newEnergyL = calcLEnergy();
-			double newEnergyM = calcMEnergy();
+            //; 更新状态后重新计算所有的能量，注意这里面还是会计算最新状态的雅克比，尽管此时不确定是否会接受这次状态
+            //TODO 感觉可以改进的地方：这里不确定是否接受这次状态更新，但是也算了雅克比，万一不接受，就有点浪费了
+			Vec3 newEnergy = linearizeAll(false);  // 里面计算能量的部分其实只和当前状态有关
+			double newEnergyL = calcLEnergy();  // 计算先验能量，只和当前状态 - 先验状态有关
+			double newEnergyM = calcMEnergy();  // 计算上次边缘化先验 在当前状态的附加能量，也是只和当前状态有关
 
 			if (!setting_debugout_runquiet)
 			{
@@ -593,7 +602,7 @@ namespace dso
 				printOptRes(newEnergy, newEnergyL, newEnergyM, 0, 0, frameHessians.back()->aff_g2l().a, frameHessians.back()->aff_g2l().b);
 			}
 
-			// Step 3.4 判断是否接受这次计算
+			// Step 3.5 判断是否接受这次计算
 			if (setting_forceAceptStep || (newEnergy[0] + newEnergy[1] + newEnergyL + newEnergyM <
 										   lastEnergy[0] + lastEnergy[1] + lastEnergyL + lastEnergyM))
 			{
@@ -605,7 +614,8 @@ namespace dso
                 }
 				else
                 {
-                    //; 又计算一次H需要的中间量是干嘛？
+                    //; 因为上面的linearizeAll已经计算了最新状态的雅克比，所以如果接受这次状态更新，那么直接调用
+                    //; applyres这个函数把计算的最新的雅克比传给后端优化即可
                     applyRes_Reductor(true, 0, activeResiduals.size(), 0, 0);
                 }
 					
@@ -618,17 +628,18 @@ namespace dso
 			else
 			{ // 不接受, roll back
 				loadSateBackup(); //; 不接受本次更新，那么把所有状态量都恢复到之前的状态
-				lastEnergy = linearizeAll(false);
+				lastEnergy = linearizeAll(false);  //; 再次重新计算雅克比，感觉确实不太好，万一不接受白浪费时间算雅克比
 				lastEnergyL = calcLEnergy();
 				lastEnergyM = calcMEnergy();
 				lambda *= 1e2;
 			}
 
+            // Step 3.6 不管上面是否接受本次更新，只要更新量足够小或者到了最大次数，那么一定要跳出循环了
 			if (canbreak && iteration >= setting_minOptIterations)
 				break;
-		} // 迭代优化完成
+		} //! ------------------------ 迭代优化完成 --------------------------------
 
-		// Step 4 把最新帧的位姿设为线性化点
+		// Step 4 把最新帧的位姿设为线性化点，也就是设置最新帧的FEJ点
 		//* 最新一帧的位姿设为线性化点, 0-5是位姿增量因此是0, 6-7是值, 直接赋值
 		Vec10 newStateZero = Vec10::Zero();
 		newStateZero.segment<2>(6) = frameHessians.back()->get_state().segment<2>(6);
@@ -637,9 +648,17 @@ namespace dso
 		EFDeltaValid = false;
 		EFAdjointsValid = false;
 		ef->setAdjointsF(&Hcalib); // 重新计算adj
+        //; 重新计算滑窗中当前状态相对线性化点的状态增量，注意在这里调用的时候，最新帧的增量就是0，因为上面
+        //; 刚刚设置线性化点。而其他帧的增量一般就不是0了，因为上面我们对这些老帧进行了优化
 		setPrecalcValues();	  // 更新增量
 
 		// 更新之后的能量
+        // Step 5 再次计算能量，注意此时传入true，会多出一些操作：
+        //; 1.首先还是基本的计算雅克比，同时计算能量残差，也就是返回值lastEnergy
+        //! 疑问：又计算雅克比，有必要吗？看看后面会不会用到
+        //; 2.传入true带来两个新的操作：
+        //;   (1)会把这次计算的雅克比传递给后端优化
+        //;   (2)会判断要剔除的外点
 		lastEnergy = linearizeAll(true);
 
 		//* 能量函数太大, 投影的不好, 跟丢
@@ -663,7 +682,8 @@ namespace dso
 			boost::unique_lock<boost::mutex> crlock(shellPoseMutex);
 			for (FrameHessian *fh : frameHessians)
 			{
-				fh->shell->camToWorld = fh->PRE_camToWorld;
+                //; PRE_camToWorld就是根据 当前状态相对线性化点的状态增量 * 线性化点状态 得到的最新的状态值
+				fh->shell->camToWorld = fh->PRE_camToWorld;  
 				fh->shell->aff_g2l = fh->aff_g2l();
 			}
 		}

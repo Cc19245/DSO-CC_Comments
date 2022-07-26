@@ -68,19 +68,19 @@ namespace dso
 	}
 
 	//@ 设置固定线性化点位置的状态
-	//TODO 后面求nullspaces地方没看懂, 回头再看<2019.09.18> 数学原理是啥?
 	void FrameHessian::setStateZero(const Vec10 &state_zero)
 	{
-		//! 前六维位姿必须是0
+		//! 前六维位姿必须是0，因为前6维给的是位姿增量
 		assert(state_zero.head<6>().squaredNorm() < 1e-20);
 
+        // Step 1 设置相对线性化点的位姿增量、光度绝对量
 		this->state_zero = state_zero;
 
-		//! 感觉这个nullspaces_pose就是 Adj_T
-		//! Exp(Adj_T*zeta)=T*Exp(zeta)*T^{-1}
+        // Step 2 后面就是求零空间
+		// 感觉这个nullspaces_pose就是 Adj_T
+		// Exp(Adj_T*zeta)=T*Exp(zeta)*T^{-1}
 		// 全局转为局部的，左乘边右乘
-		//! T_c_w * delta_T_g * T_c_w_inv = delta_T_l
-		//TODO 这个是数值求导的方法么???
+		// T_c_w * delta_T_g * T_c_w_inv = delta_T_l
 		for (int i = 0; i < 6; i++)
 		{
 			Vec6 eps;
@@ -95,7 +95,6 @@ namespace dso
 		//nullspaces_pose.topRows<3>() *= SCALE_XI_TRANS_INVERSE;
 		//nullspaces_pose.bottomRows<3>() *= SCALE_XI_ROT_INVERSE;
 
-		//? rethink
 		// scale change
 		SE3 w2c_leftEps_P_x0 = (get_worldToCam_evalPT());
 		w2c_leftEps_P_x0.translation() *= 1.00001;
@@ -110,6 +109,7 @@ namespace dso
 		assert(ab_exposure > 0);
 		nullspaces_affine.topRightCorner<2, 1>() = Vec2(0, expf(aff_g2l_0().a) * ab_exposure);
 	};
+
 
 	void FrameHessian::release()
 	{

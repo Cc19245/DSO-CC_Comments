@@ -394,8 +394,8 @@ namespace dso
     /**
      * @brief 计算滑窗中各个帧的位姿、光度增量，相机内参增量，然后还会调用函数计算逆深度增量
      *  参考博客：https://www.cnblogs.com/JingeTU/p/9157620.html
-     * @param[in] x 
-     * @param[in] HCalib 
+     * @param[in] x  之前求解终极正规方程得到的滑窗中相机状态、内参增量，68维
+     * @param[in] HCalib 相机内参Hessian，因为要更新它了
      * @param[in] MT 
      */
 	void EnergyFunctional::resubstituteF_MT(VecX x, CalibHessian *HCalib, bool MT)
@@ -403,17 +403,21 @@ namespace dso
 		assert(x.size() == CPARS + nFrames * 8);
 
 		VecXf xF = x.cast<float>();
+        // Step 1 相机内参增量
         //; 注意这里取了负号，因为之前算的是-delta_x
 		HCalib->step = -x.head<CPARS>(); // 相机内参, 这次的增量
 
+        // Step 2 相机状态增量
+        //; 存储绝对增量变成相对增量的值，给下面计算逆深度使用
 		Mat18f *xAd = new Mat18f[nFrames * nFrames];
 		VecCf cstep = xF.head<CPARS>();
         
         //; 遍历所有的能量帧
 		for (EFFrame *h : frames)
 		{
+            //; step是10维向量，这里前8维赋值相机位姿、光度的增量，后2维直接赋值0（那为啥用10维？）
 			h->data->step.head<8>() = -x.segment<8>(CPARS + 8 * h->idx); // 帧位姿和光度求解的增量
-			h->data->step.tail<2>().setZero();
+			h->data->step.tail<2>().setZero();  
 
 			//* 绝对位姿增量变相对的
 			for (EFFrame *t : frames)
@@ -422,7 +426,7 @@ namespace dso
             }
 		}
 
-		//* 计算点的逆深度增量
+		// Step 3 逆深度增量
 		if (MT)
         {
 			red->reduce(boost::bind(&EnergyFunctional::resubstituteFPt,
@@ -432,6 +436,7 @@ namespace dso
 		else
         {
             //; 单线程，求解逆深度的增量
+            //; cstep：相机内参增量(带负号)， xAd：相机相对状态增量(带负号)，然后传入所有点个数，从头开始遍历求解
 			resubstituteFPt(cstep, xAd, 0, allPoints.size(), 0, 0);
         }
 
@@ -444,21 +449,23 @@ namespace dso
      * @brief 计算点的逆深度增量
      *   参考博客：https://www.cnblogs.com/JingeTU/p/9157620.html
      * 
-     * @param[in] xc 
-     * @param[in] xAd 
-     * @param[in] min 
-     * @param[in] max 
+     * @param[in] xc    求解终极正规方程得到的相机内参增量
+     * @param[in] xAd   求解终极正规方程得到的相机绝对状态增量，然后转成相对状态增量
+     * @param[in] min   从哪个残差点开始遍历
+     * @param[in] max   到哪个残差点结束遍历
      * @param[in] stats 
-     * @param[in] tid 
+     * @param[in] tid   多线程，线程号
      */
 	void EnergyFunctional::resubstituteFPt(
 		const VecCf &xc, Mat18f *xAd, int min, int max, Vec10 *stats, int tid)
 	{
-        //; 遍历所有点，求其逆深度增量
+        // 遍历所有点，求其逆深度增量
 		for (int k = min; k < max; k++)
 		{
 			EFPoint *p = allPoints[k];
 
+            //; 这里的判断之前也出现过，这个点构成的残差必须是active的。实际上这个条件一定成立，
+            //; 因为margin边缘化的点后面直接删掉了
 			int ngoodres = 0;
 			for (EFResidual *r : p->residualsAll)
             {
@@ -467,16 +474,20 @@ namespace dso
 					ngoodres++;
                 }
             }
-
 			if (ngoodres == 0)
 			{
 				p->data->step = 0;
 				continue;
 			}
-			float b = p->bdSumF;
+
+			float b = p->bdSumF;  //; bdSumF这里简单理解就是这个点所构成的所有的残差项得到的bd那一项，即J'*e
 			// b -= xc.dot(p->Hcd_accAF + p->Hcd_accLF); //* 减去逆深度和内参
+            // Step 1 先减去相机内参的部分，因为这个是一个点上的所有残差累加的，所以直接在这里减即可，
+            //   Step 不用像下面一样在循环中遍历所有构成的残差减
+            //; 这个共视就是 Hdc * Xc 
 			b -= xc.dot(p->Hcd_accAF); //* 减去逆深度和内参
 
+            // Step 2 再遍历这个点构成的每一个残差，减去相机状态的增量
 			for (EFResidual *r : p->residualsAll)
 			{
 				if (!r->isActive())
@@ -484,9 +495,11 @@ namespace dso
 					continue;
                 }
 				//* 减去逆深度和位姿 光度参数
-				b -= xAd[r->hostIDX * nFrames + r->targetIDX] * r->JpJdF; //! 绝对变相对的, xAd是转置了的
+                //; 乘号前面就是取出这个残差对应的相机相对状态的增量，即Xf部分，后面的JpJdF就是Hdf，所以这里就是Hdf * Xf
+				b -= xAd[r->hostIDX * nFrames + r->targetIDX] * r->JpJdF; // 绝对变相对的, xAd是转置了的
 			}
 
+            // Step 3 最后剩下的部分就是 Hdd^-1 * Xd = b，然后解出逆深度增量Xd即可。同理这里Xd还要取负号
 			p->data->step = -b * p->HdiF; // 逆深度的增量
 			assert(std::isfinite(p->data->step));
 		}
@@ -1098,15 +1111,14 @@ namespace dso
         //; 注意这里好像就是为了求解舒尔补计算本次的Hx=b方程，而不是边缘化的那个舒尔补
 		accumulateSCF_MT(H_sc, b_sc, multiThreading);
 
-		//TODO HM 和 bM是啥啊
-		// Step 1.4 由于固定线性化点, 每次迭代更新残差
+		// Step 1.4  一阶泰勒展开求 上次的边缘化先验 在当前状态下的b
         //; 这个地方应该就是和VINS的FEJ一样的，由于使用了FEJ，虽然Hessian不能改变了，但是每次的残差需要改变
         //; 这里和深蓝PPT P38可以对应上，这里的HM和bM就是上次边缘化的时候得到的Hessian和b，也就是线性化点
-		bM_top = (bM + HM * getStitchedDeltaF());
+		bM_top = (bM + HM * getStitchedDeltaF()); 
 
+        // Step 2 本次正规方程部分、本次正规方程舒尔补部分、上次边缘化先验在当前状态下的b部分都计算完了，开始求解终极正规方程
 		MatXX HFinal_top;
 		VecX bFinal_top;
-		// Step 2 使用不同的方法求解
         // 如果是设置求解正交系统, 则把相对应的零空间部分Jacobian设置为0, 否则正常计算schur
         //; 实际上设置中不满足这个条件，因此不会执行这个if语句
 		if (setting_solverMode & SOLVER_ORTHOGONALIZE_SYSTEM)
@@ -1145,13 +1157,19 @@ namespace dso
         //; 实际执行这里，先把所有的H和b加起来，包括边缘化的HM、本次求解的H、舒尔补H_sc等
 		else
 		{
-			// HFinal_top = HL_top + HM + HA_top;
             //; 疑问：这里没有使用线性化计算的那部分H啊？那上面计算了半天还有啥用？
+            //; 解答：这里可以从两个方面解答：
+            //;   1.上面accumulateLF_MT函数计算的值没有用，可以看下面被注释掉了
+            //;   2.实际上accumulateLF_MT函数内部根本没有实质的计算操作，最后还是给L相关变量赋值0了，所以这里加不加无所谓
+			// HFinal_top = HL_top + HM + HA_top;
 			HFinal_top = HM + HA_top;  //; 注意加上边缘化固定的HM
-			// bFinal_top = bL_top + bM_top + bA_top - b_sc;
+			
+            //; b部分，本次值 - 本次舒尔补 + 上次边缘化先验在本次的贡献
+            // bFinal_top = bL_top + bM_top + bA_top - b_sc;
 			bFinal_top = bM_top + bA_top - b_sc;  
 
-			lastHS = HFinal_top - H_sc;
+            //; 同理H也要减去本次舒尔补
+			lastHS = HFinal_top - H_sc;  //; 草，写的这么分散，你在上面减不行吗？
 			lastbS = bFinal_top;
 
 			//* 而这个就是阻尼加在了整个Hessian上
@@ -1240,12 +1258,14 @@ namespace dso
 			// std::cout<<"//=====================Test null space end=====================/ "<<std::endl;
 		}
 
+        //; 最终求解出来的本次优化的增量，赋值给类成员变量
 		lastX = x;
 
 		// Step 5 分别求出各个待求量的增量值
 		//resubstituteF(x, HCalib);
 		currentLambda = lambda;
-        //; 计算滑窗中各个相机位姿+光度增量、相机内参增量，在其内部还会调用函数计算点的逆深度增量
+        //; 上面已经计算出来了滑窗中各个相机位姿+光度增量、相机内参增量，然后调用这个函数，
+        //; 在其内部把上面的状态增量取反；然后计算点的逆深度增量，因为前面的计算把点的逆深度都margin掉了
 		resubstituteF_MT(x, HCalib, multiThreading);
 		currentLambda = 0;
 	}
@@ -1294,8 +1314,11 @@ namespace dso
 	//@ 返回状态增量, 这里帧位姿和光度参数, 使用的是每一帧绝对的
 	VecX EnergyFunctional::getStitchedDeltaF() const
 	{
-		VecX d = VecX(CPARS + nFrames * 8);
+		VecX d = VecX(CPARS + nFrames * 8); //; 68维的状态增量
+        //; 1.当前状态的相机内参 - 相机内参先验
 		d.head<CPARS>() = cDeltaF.cast<double>(); // 相机内参增量
+
+        //; 2.对于帧来说，就是当前相机状态(位姿、光度) - 线性化点的状态
 		for (int h = 0; h < nFrames; h++)
         {
 			d.segment<8>(CPARS + 8 * h) = frames[h]->delta;

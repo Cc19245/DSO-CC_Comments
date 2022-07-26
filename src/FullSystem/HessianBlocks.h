@@ -140,12 +140,19 @@ namespace dso
 		Vec6 nullspaces_scale;
 
 		// variable info.
+        //; 线性化点的相机位姿，也就是新的关键帧进来经过优化之后，
+        //; 把优化后的状态设置成这个，作为下个关键帧进行滑窗优化的线性化点
 		SE3 worldToCam_evalPT; //!< 在估计的相机位姿
+
 		// [0-5: 位姿左乘小量. 6-7: a,b 光度仿射系数]
 		//* 这三个是与线性化点的增量, 而光度参数不是增量, state就是值
+        //; 前6维是相对线性化点的增量，后2维就是光度值
 		Vec10 state_zero;	//!< 固定的线性化点的状态增量, 为了计算进行缩放
 		Vec10 state_scaled; //!< 乘上比例系数的状态增量, 这个是真正求的值!!!
+
+        //; 这里确实是状态增量，前6维
 		Vec10 state;		//!< 计算的状态增量
+
 		//* step是与上一次优化结果的状态增量, [8 ,9]直接就设置为0了
 		Vec10 step;			//!< 求解正规方程得到的增量
 		Vec10 step_backup;	//!< 上一次的增量备份
@@ -170,9 +177,16 @@ namespace dso
 
 		//* 设置FEJ点状态增量
 		void setStateZero(const Vec10 &state_zero);
+
+
 		//* 设置增量, 同时复制state和state_scale
 		inline void setState(const Vec10 &state)
 		{
+            // Step 1 设置状态增量，有两种情况：
+            //; 1.state ≠ 0：求解终极正规方程后得到滑窗中状态的增量，此时和上次相对线性化点的增量相加，就得到
+            //;   状态更新后最新的状态相对线性化点的增量，也就是这里传入的state，此时state是不为0的
+            //; 2.state = 0：最新的关键帧插入滑窗，然后优化完成后，需要把最新关键帧的当前最优状态设置为线性化点
+            //;   给下次滑窗优化使用，此时传入的state就是0，表示此时最新的状态就是线性化点的状态
 			this->state = state;
 			state_scaled.segment<3>(0) = SCALE_XI_TRANS * state.segment<3>(0);
 			state_scaled.segment<3>(3) = SCALE_XI_ROT * state.segment<3>(3);
@@ -180,11 +194,14 @@ namespace dso
 			state_scaled[7] = SCALE_B * state[7];
 			state_scaled[8] = SCALE_A * state[8];
 			state_scaled[9] = SCALE_B * state[9];
-			//位姿更新
+
+			// Step 2.在线性化点的基础上，位姿的更新量更新上去，得到新的位姿
 			PRE_worldToCam = SE3::exp(w2c_leftEps()) * get_worldToCam_evalPT();
 			PRE_camToWorld = PRE_worldToCam.inverse();
 			//setCurrentNullspace();
 		};
+
+
 		//* 设置增量, 传入state_scaled
 		inline void setStateScaled(const Vec10 &state_scaled)
 		{
@@ -201,14 +218,29 @@ namespace dso
 			PRE_camToWorld = PRE_worldToCam.inverse();
 			//setCurrentNullspace();
 		};
+
+
 		//* 设置当前位姿, 和状态增量, 同时设置了FEJ点
+        /**
+         * @brief 设置这一帧的线性化点。实际调用的时候，就是最新帧优化后的位姿，作为它的线性化点。
+         *   也就是说，每当滑窗中来一个新的关键帧，并且对它进行一次滑窗优化后，就把他当前的位姿设置
+         *   成线性化点，并且后面一直保持是这个线性化点，直到它滑出滑窗
+         * 
+         * @param[in] worldToCam_evalPT 
+         * @param[in] state 
+         */
 		inline void setEvalPT(const SE3 &worldToCam_evalPT, const Vec10 &state)
 		{
-
+            //; 1.赋值最新帧的最新状态为线性化点，给下次滑窗使用
 			this->worldToCam_evalPT = worldToCam_evalPT;
+
+            //; 2.设置
 			setState(state);
+
+            //; 3.设置相对线性化点的位姿增量、光度绝对量，然后还会计算此时的零空间
 			setStateZero(state);
 		};
+
 
 		//* 设置当前位姿, 光度仿射系数, FEJ点
 		inline void setEvalPT_scaled(const SE3 &worldToCam_evalPT, const AffLight &aff_g2l)

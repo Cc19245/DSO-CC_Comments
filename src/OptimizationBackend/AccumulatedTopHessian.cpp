@@ -203,20 +203,27 @@ namespace dso
              * Hcd_acc对应着这些EFPoint的成员变量，最后赋值到成员变量。
              */
             // Step 2 计算后面舒尔补部分要用的，和深蓝PPT P36对应
+            //; 7.26增：不是！这个地方和P36非常像，但不是一样的。P36涉及的状态只有位姿、内参、光度，不涉及逆深度，
+            //;      因为最后舒尔消元得到的只是这些状态的正规方程而没有逆深度。但是最后求解完相机状态的正规方程
+            //;      得到相机状态增量之后，还需要反带到逆深度的方程中求解逆深度，所以总的H和b中和逆深度同一行的
+            //;      部分也是需要在构造H和b的时候构造出来的，所以这里就是在构造这部分。
             //?     下面使用 += 就是这个点和其他帧上的点构成的残差，都可以算作这个点的逆深度的hessain部分，所以是+=
 			Vec2f Ji2_Jpdd = rJ->JIdx2 * rJ->Jpdd;  // 中间变量，无意义
-            //; 1x1, (残差 * 残差对像素坐标的雅克比) * 像素坐标对逆深度的雅克比 = 残差 * 残差对逆深度的雅克比，
-            //;  实际这个就是hessian中最右边一列和逆深度相关的部分
+            //; 1x1, (残差 * 残差对像素坐标的雅克比) * 像素坐标对逆深度的雅克比 = 残差 * 残差对逆深度的雅克比
+            //;  这个就是b_d，即当前这个点的逆深度部分的b，因为b = J*e, 所以这里算的就是J*e
 			bd_acc += JI_r[0] * rJ->Jpdd[0] + JI_r[1] * rJ->Jpdd[1];		  //* 残差*逆深度J
             //; 1x1, 这个实际就是 残差对逆深度雅克比' * 残差对逆深度雅克比，也就是Hessian中行列都是逆深度位置的部分
 			Hdd_acc += Ji2_Jpdd.dot(rJ->Jpdd);								  //* 光度对逆深度hessian
 			//; 4x1, 这个确实是 残差对相机内参雅克比' * 残差对逆深度雅克比 = 4x1 * 1x1 = 4x1
-            //! 疑问：这个有啥意义啊？
+            //;  这里其实就在算H中和当前点的逆深度在同一行的那部分。但是由于这里要注意只计算了相机内参的部分，并没有计算
+            //;  相机位姿的部分，这是为何？我觉得还是因为这里求得还是相对位姿的雅克比，而最后求解用的是绝对位姿雅克比，
+            //;  所以可能这样直接算出来没有意义？
             Hcd_acc += rJ->Jpdc[0] * Ji2_Jpdd[0] + rJ->Jpdc[1] * Ji2_Jpdd[1]; //* 光度对内参J*光度对逆深度J
 
 			nres[tid]++;
 		} // 遍历这个点构成的所有残差完毕
 
+        //; active模式，则属于正常的普通状态，所以累加结果存到A相关的变量中
 		if (mode == 0)
 		{
 			p->Hdd_accAF = Hdd_acc;
@@ -226,6 +233,7 @@ namespace dso
         //; 线性化或者边缘化模式，都会设置L相关的变量
 		if (mode == 1 || mode == 2)
 		{
+            //! 注意：在mode=1的时候，实际上面的遍历没有实际作用，所以这里全是0
 			p->Hdd_accLF = Hdd_acc;
 			p->bd_accLF = bd_acc;
 			p->Hcd_accLF = Hcd_acc;
@@ -299,6 +307,7 @@ namespace dso
 		{
 			assert(useDelta);
 			H.diagonal().head<CPARS>() += EF->cPrior;
+            //; 这里也可以看出来，cDeltaF是相机当前内参相对先验内参的增量
 			b.head<CPARS>() += EF->cPrior.cwiseProduct(EF->cDeltaF.cast<double>());
 			for (int h = 0; h < nframes[tid]; h++)
 			{
@@ -374,7 +383,7 @@ namespace dso
             // 1.host-host部分，比如(4+8*2, 4+8*2)位置
 			H[tid].block<8, 8>(hIdx, hIdx).noalias() += 
                 EF->adHost[aidx] * accH.block<8, 8>(CPARS, CPARS) * EF->adHost[aidx].transpose();
-            // 2.target-host部分，比如(4+8*5, 4+8*2)位置
+            // 2.target-target部分，比如(4+8*5, 4+8*5)位置
 			H[tid].block<8, 8>(tIdx, tIdx).noalias() += 
                 EF->adTarget[aidx] * accH.block<8, 8>(CPARS, CPARS) * EF->adTarget[aidx].transpose();
             // 3.host-target部分，比如(4+8*2, 4+8*5)位置

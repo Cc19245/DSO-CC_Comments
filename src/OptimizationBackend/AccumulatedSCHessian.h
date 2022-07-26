@@ -140,16 +140,22 @@ namespace dso
                 //; H：68x68, b：68x1
 				H = MatXX::Zero(nframes[0] * 8 + CPARS, nframes[0] * 8 + CPARS);
 				b = VecX::Zero(nframes[0] * 8 + CPARS);
-                //; 优化信息统计，就是把
+                // Step 1 优化信息统计，就是把在8*8的小的hessian中计算的舒尔补，拼凑成最后整个大的舒尔补的H和b,
+                //   Step 同时在内部还把之前小的hessian中的相对状态转成了绝对状态
 				stitchDoubleInternal(&H, &b, EF, 0, nframes[0] * nframes[0], 0, -1);
 			}
 
+            // Step 2 同正常计算的H一样，这里也要沿着对角线拷贝
 			//* 对称部分
 			// make diagonal by copying over parts.
 			for (int h = 0; h < nframes[0]; h++)
 			{
+                // Step 2.1 先拷贝了相机内参所在的上面4行和左边4列
 				int hIdx = CPARS + h * 8;
 				H.block<CPARS, 8>(0, hIdx).noalias() = H.block<8, CPARS>(hIdx, 0).transpose();
+
+                // Step 2.2 对于正常计算的H来说，这里还需要把H的相机位姿部分沿着对角线相加，然后再拷贝，让H是一个
+                //  Step 对称矩阵。但是这里就没有了，是不是因为和它内部计算accD的时候有两个循环有关？
 			}
 		}
 
