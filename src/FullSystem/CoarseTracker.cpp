@@ -129,6 +129,7 @@ namespace dso
 		}
 	}
 
+
 	//@ 使用在当前帧上投影的点的逆深度, 来生成每个金字塔层上点的逆深度值
 	void CoarseTracker::makeCoarseDepthL0(std::vector<FrameHessian *> frameHessians)
 	{
@@ -624,6 +625,7 @@ namespace dso
 
 		firstCoarseRMSE = -1;
 	}
+
 
     /**
      * @brief 对新来的帧进行跟踪, 优化得到位姿, 光度参数

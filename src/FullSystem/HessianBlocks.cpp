@@ -224,11 +224,11 @@ namespace dso
 		}
 	}
 
+
 	//@ 计算优化前和优化后的相对位姿, 相对光度变化, 及中间变量
-	//! 疑问：没看懂这个部分在干什么？？
     /**
      * @brief 这个代码对应深蓝PPT中的P38，由于使用了FEJ，所以这里就是在保存不同的状态，包括固定的线性化点处的相对位姿，
-     *    优化更新状态后的相对位姿等
+     *    优化更新状态后的相对位姿等(每次优化更新之后都会调用(调用这个函数的)函数，从而重新计算更新后的相对位姿)
      * 
      * @param[in] host 
      * @param[in] target 
@@ -239,18 +239,23 @@ namespace dso
 		this->host = host; // 这个是赋值, 计数会增加, 不是拷贝
 		this->target = target;
 
-		//? 实在不懂leftToleft_0这个名字怎么个含义
+		// 实在不懂leftToleft_0这个名字怎么个含义
+        // Step 1 线性化点的值
 		// 优化前host target间位姿变换
+        //; get_worldToCam_evalPT是这一帧正在估计的相机位姿？那么这个在优化之前调用，也就是优化之前的相对位姿？
 		SE3 leftToLeft_0 = target->get_worldToCam_evalPT() * host->get_worldToCam_evalPT().inverse();
-		PRE_RTll_0 = (leftToLeft_0.rotationMatrix()).cast<float>();
+		PRE_RTll_0 = (leftToLeft_0.rotationMatrix()).cast<float>();  //; PRE是Precalc的前缀pre, 表示预计算
 		PRE_tTll_0 = (leftToLeft_0.translation()).cast<float>();
 
+        // Step 2 优化后的值
 		// 优化后host到target间位姿变换
+        //! 疑问：这里为什么用的是预计算的值来求优化后的位姿变换？
 		SE3 leftToLeft = target->PRE_worldToCam * host->PRE_camToWorld;
 		PRE_RTll = (leftToLeft.rotationMatrix()).cast<float>();
 		PRE_tTll = (leftToLeft.translation()).cast<float>();
 		distanceLL = leftToLeft.translation().norm();
 
+        // Step 3 优化后内参的一些变化量
 		// 乘上内参, 中间量?
 		Mat33f K = Mat33f::Zero();
 		K(0, 0) = HCalib->fxl();

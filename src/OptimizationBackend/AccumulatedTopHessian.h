@@ -74,6 +74,7 @@ namespace dso
 			// 初始化, 设置初值
 			for (int i = 0; i < nFrames * nFrames; i++)
 			{
+                //! 重要：第tid(默认0)个线程中开辟8*8个累加器，用来计算和存储13x13的hessian和b
 				acc[tid][i].initialize();
 			}
 
@@ -93,9 +94,9 @@ namespace dso
          * @param[in] red 
          * @param[in] H 
          * @param[in] b 
-         * @param[in] EF 
-         * @param[in] usePrior 
-         * @param[in] MT 
+         * @param[in] EF 能量函数
+         * @param[in] usePrior true表示把最后的大的hessian矩阵加上先验
+         * @param[in] MT false
          */
 		void stitchDoubleMT(IndexThreadReduce<Vec10> *red, MatXX &H, VecX &b, 
             EnergyFunctional const *const EF, bool usePrior, bool MT)
@@ -128,7 +129,7 @@ namespace dso
 					nres[0] += nres[i];
 				}
 			}
-			else // 不使用多线程
+			else // 默认不使用多线程
 			{
                 //; 整个大的H和b的维度，假设是8个关键帧，每个关键帧是6个位姿+2个光度，即8个参数，整个滑窗还维护统一的4个内参
                 //; 所以状态变量维度是8 * 8 + 4 = 68维
@@ -142,12 +143,13 @@ namespace dso
 			for (int h = 0; h < nframes[0]; h++)
 			{
 				int hIdx = CPARS + h * 8;
-				H.block<CPARS, 8>(0, hIdx).noalias() = H.block<8, CPARS>(hIdx, 0).transpose(); //! [内参, 位姿] 对称部分
+                // [内参, 位姿] 对称部分
+				H.block<CPARS, 8>(0, hIdx).noalias() = H.block<8, CPARS>(hIdx, 0).transpose(); 
 
 				for (int t = h + 1; t < nframes[0]; t++)
 				{
 					int tIdx = CPARS + t * 8;
-					//! 对于位姿, 相同两帧之间的Hessian需要加起来, 即对称位置的, (J差负号, 平方之后就好了)
+					// 对于位姿, 相同两帧之间的Hessian需要加起来, 即对称位置的, (J差负号, 平方之后就好了)
 					H.block<8, 8>(hIdx, tIdx).noalias() += H.block<8, 8>(tIdx, hIdx).transpose();
 					H.block<8, 8>(tIdx, hIdx).noalias() = H.block<8, 8>(hIdx, tIdx).transpose();
 				}
@@ -155,11 +157,11 @@ namespace dso
 		}
 
 
-		int nframes[NUM_THREADS]; //!< 每个线程的帧数
+		int nframes[NUM_THREADS]; //< 每个线程的帧数
 
-		EIGEN_ALIGN16 AccumulatorApprox *acc[NUM_THREADS]; //!< 计算hessian的累乘器
+		EIGEN_ALIGN16 AccumulatorApprox *acc[NUM_THREADS]; //< 计算hessian的累乘器
 
-		int nres[NUM_THREADS]; //!< 残差计数
+		int nres[NUM_THREADS]; //< 残差计数
 
 		template <int mode>
 		void addPointsInternal(
@@ -167,7 +169,9 @@ namespace dso
 			int min = 0, int max = 1, Vec10 *stats = 0, int tid = 0)
 		{
 			for (int i = min; i < max; i++)
+            {
 				addPoint<mode>((*points)[i], ef, tid);
+            }
 		}
 
 	private:

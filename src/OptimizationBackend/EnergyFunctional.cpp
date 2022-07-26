@@ -209,11 +209,13 @@ namespace dso
 		delete accSSE_bot;
 	}
 
+
 	//@ 计算各种状态的相对量的增量
-	//! 疑问：在干啥？这个函数基本没看懂
 	/**
 	 * @brief  这个好像就是在计算各个状态的当前值相对于大的先验（比如相机内参）的增量值？
 	 *   参见深蓝学院PPT P40
+     * 7.26增：1.相机状态相对线性化点状态的 线性化增量
+     *        2.相机内参、光度、逆深度的   先验增量
 	 * @param[in] HCalib 
 	 */
 	void EnergyFunctional::setDeltaF(CalibHessian *HCalib)
@@ -222,16 +224,19 @@ namespace dso
 			delete[] adHTdeltaF;
 		//; Mat18f是1行8列的行向量
 		adHTdeltaF = new Mat18f[nFrames * nFrames];
+
+        // Step 1 相机状态的线性化增量：把相机当前相对状态 和 线性化点相对状态之间的差值，转到相机绝对状态上
 		for (int h = 0; h < nFrames; h++)
 		{
 			for (int t = 0; t < nFrames; t++)
 			{
 				int idx = h + t * nFrames;
-				//! delta_th = Adj * delta_t or delta_th = Adj * delta_h
+				// delta_th = Adj * delta_t or delta_th = Adj * delta_h
 				// 加一起应该是, 两帧之间位姿变换的增量, 因为h变一点, t变一点
 				//; 这个地方好像是利用两帧之间的相对状态的增量 * 相对状态对绝对状态的雅克比 = 绝对状态的增量，
 				//; 然后把两个相对帧的 绝对状态的增量加在一起？
 				adHTdeltaF[idx] = 
+                    //; get_state_minus_stateZero得到的应该是当前状态和线性化点的状态之间的增量
 					frames[h]->data->get_state_minus_stateZero().head<8>().cast<float>().transpose() * 
 					adHostF[idx]   //; adHostF是伴随矩阵，即相对状态 对 host帧的雅克比
 					+ 
@@ -239,13 +244,14 @@ namespace dso
 					adTargetF[idx];  //; adTargetF是伴随矩阵，即相对状态 对 Target帧的雅克比
 			}
 		}
-        //; 相机内参的先验增量
+
+        // Step 2 相机内参的先验增量：注意这个应该是当前状态和先验状态之间的增量，而不是涉及线性化点
 		cDeltaF = HCalib->value_minus_value_zero.cast<float>(); // 相机内参增量
 
-		//! 靠，到底在算什么东西啊？？？
+		// Step 3 相机光度先验增量、逆深度先验增量
 		for (EFFrame *f : frames)
 		{
-			f->delta = f->data->get_state_minus_stateZero().head<8>();					 // 帧位姿增量
+			f->delta = f->data->get_state_minus_stateZero().head<8>();	// 帧位姿增量
             //; 位姿光度的先验增量
 			f->delta_prior = (f->data->get_state() - f->data->getPriorZero()).head<8>(); // 先验增量
 
@@ -256,8 +262,10 @@ namespace dso
 			}
 		}
 
+        // Step 4 置位标志：当前状态和相机状态线性化点的增量，相机内参、光度、逆深度先验增量都已经计算完毕
 		EFDeltaValid = true;
 	}
+
 
 	// accumulates & shifts L.
 	//@ 计算能量方程内帧点构成的 正规方程
@@ -284,7 +292,9 @@ namespace dso
 		}
 		else
 		{
-			accSSE_top_A->setZero(nFrames);
+            //; 这里传入关键帧个数nFrames，会初始化累加器中的每个线程中的nFrames
+			accSSE_top_A->setZero(nFrames);  
+
             //; 遍历所有的能量帧
 			for (EFFrame *f : frames)
             {
@@ -491,7 +501,9 @@ namespace dso
 		assert(EFIndicesValid);
 
 		VecX delta = getStitchedDeltaF();
+
         //; 下面这个能量结果这篇博客中有：https://blog.csdn.net/wubaobao1993/article/details/104343866
+        //; 不过这里其实和深蓝PPT中的P38 右下角是一样的，本质上就是再算上一次边缘化的结果对这次产生的能量
 		return delta.dot(2 * bM + HM * delta);  
 	}
 
@@ -589,7 +601,7 @@ namespace dso
         }	
 		E += cDeltaF.cwiseProduct(cPriorF).dot(cDeltaF); // 相机内参先验
 
-        //; 2.多线程计算逆深度的先验(只有第一帧有)能量
+        //; 2.多线程计算逆深度的先验(只有第一帧上的点有)能量
 		red->reduce(boost::bind(&EnergyFunctional::calcLEnergyPt,
 								this, _1, _2, _3, _4),
 					0, allPoints.size(), 50);
@@ -609,9 +621,10 @@ namespace dso
 		connectivityMap[(((uint64_t)efr->host->frameID) << 32) + ((uint64_t)efr->target->frameID)][0]++;
 
 		nResiduals++;
-		r->efResidual = efr;
+		r->efResidual = efr;  //; 前端的点残差 持有 这个点能量残差
 		return efr;
 	}
+
 
 	//@ 向能量函数中增加一帧, 进行的操作: 改变正规方程, 重新排ID, 共视关系
 	/**
@@ -671,6 +684,7 @@ namespace dso
 
 		return eff;
 	}
+
 
 	//@ 向能量函数中插入一个点, 放入对应的EFframe
 	/**
@@ -1066,21 +1080,21 @@ namespace dso
 		VecX bL_top, bA_top, bM_top, b_sc;
 
 		// Step 1.1 针对新的残差, 使用的当前残差, 没有逆深度的部分
-        //; 新的残差？
-        //; 传入的multiThreading在配置文件中默认是false，也就是不使用多线程操作
+        //; 这里就是计算当前状态构成的正规方程，不涉及其他任何操作
 		accumulateAF_MT(HA_top, bA_top, multiThreading);
 
 		// Step 1.2 边缘化fix的残差, 有边缘化对的, 使用的res_toZeroF减去线性化部分, 加上先验, 没有逆深度的部分
 		//bug: 这里根本就没有点参与了, 只有先验信息, 因为边缘化的和删除的点都不在了
 		// 这里唯一的作用就是 把 p相关的置零
         //; 这里面的操作和上面accumulateAF_MT的操作完全一样，唯一不同的是这里面使用mode=1，表示线性化
-        //! 疑问：关于这个线性化还是没有特别明白
+        //! 注意：这里对最后计算的H没有帮助，因为可以看后面考虑所有状态计算总的H的时候，并没有把这部分加入
 		accumulateLF_MT(HL_top, bL_top, multiThreading); // 计算的是之前计算过得
-														 // p->Hdd_accLF = 0;
-														 // p->bd_accLF = 0;
-														 // p->Hcd_accLF =0 ;
+        //; 以上函数计算完成后，唯一的作用是把下面三个变量全部置0了
+        // p->Hdd_accLF = 0;
+        // p->bd_accLF = 0;
+        // p->Hcd_accLF =0 ;
 
-		// Step 1.3 关于逆深度的Schur部分计算
+		// Step 1.3 关于逆深度的Schur部分计算，为了把逆深度舒尔消元对H和b的影响计算出来
         //; 注意这里好像就是为了求解舒尔补计算本次的Hx=b方程，而不是边缘化的那个舒尔补
 		accumulateSCF_MT(H_sc, b_sc, multiThreading);
 
@@ -1241,22 +1255,27 @@ namespace dso
 	void EnergyFunctional::makeIDX()
 	{
 		// 重新赋值ID
-		//; frames是类的成员变量，一个vector，存储所有能量函数帧
+        // Step 1 所有帧重新赋值ID
+		//; frames是类的成员变量，一个vector，存储所有 EFFrame*
 		for (unsigned int idx = 0; idx < frames.size(); idx++)
 		{
 			frames[idx]->idx = idx;  //; 重新赋值idx，变成在vector中存储的id
 		}
-
-		//; allPoints是类成员变量，一个vector, 存储所有计算能量函数的点
-		allPoints.clear();
-
+        
+        // Step 2 重新存储所有的host点，并且重新计算这些点构成的残差的host帧和target帧id
+		//; allPoints是类成员变量，一个vector, 存储所有 EFPoint*
+		allPoints.clear();  //; 先把所有的点清空，下面重新加入点
+        // 遍历所有关键帧
 		for (EFFrame *f : frames)
 		{
+            // 遍历这个关键帧所持有的点，也就是host的点
 			for (EFPoint *p : f->points)
 			{
-				//; 遍历所有帧，遍历帧上的所有点，存储到allPoints中
+				//; 存储当前帧所host的点
 				allPoints.push_back(p);
-				// 残差的ID号
+				
+                //; 这个host点可以和其他target帧构成残差，所以再遍历所有的残差
+                // 残差的ID号
 				for (EFResidual *r : p->residualsAll)
 				{
 					// 残差的主导帧索引，等于这个残差的主导帧在EFFrmae中的索引
@@ -1266,8 +1285,11 @@ namespace dso
 				}
 			}
 		}
+
+        // Step 3 置位标志：重新梳理索引ID号完毕
 		EFIndicesValid = true;
 	}
+
 
 	//@ 返回状态增量, 这里帧位姿和光度参数, 使用的是每一帧绝对的
 	VecX EnergyFunctional::getStitchedDeltaF() const
@@ -1275,7 +1297,9 @@ namespace dso
 		VecX d = VecX(CPARS + nFrames * 8);
 		d.head<CPARS>() = cDeltaF.cast<double>(); // 相机内参增量
 		for (int h = 0; h < nFrames; h++)
+        {
 			d.segment<8>(CPARS + 8 * h) = frames[h]->delta;
+        }
 		return d;
 	}
 }

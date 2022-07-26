@@ -43,10 +43,12 @@ namespace dso
      */
 	void EFResidual::takeDataF()
 	{
+        // Step 1 获取前端计算的雅克比
         //; 这里就是把持有的PointFrameResidual *data内部的雅克比RawResidualJacobian，
         //;  交换给的当前类的成员变量RawResidualJacobian* J，从而获得从前端计算的雅克比
 		std::swap<RawResidualJacobian *>(J, data->J);
 
+        // Step 2 利用前端计算的雅克比，再算一些计算hessian的时候需要的中间量，即JpJdF
         //; 1.注意下面的计算和两个博客中的是吻合的，涂金戈博客中写的是  图像导数 * (图像导数 * 逆深度导数) = 2x8 * 8x1 = 2x1
         //;   这不过这里代码中实际用的是 (图像导数 * 图像导数) * 逆深度导数 = 2x2 * 2x1 = 2x1
 		// 图像导数 * 图像导数 * 逆深度导数

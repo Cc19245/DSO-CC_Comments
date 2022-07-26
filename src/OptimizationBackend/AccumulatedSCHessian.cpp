@@ -30,7 +30,7 @@
 namespace dso
 {
     /**
-     * @brief 对逆深度执行舒尔补，为后面求解相机位姿+广度参数做准备
+     * @brief 对逆深度执行舒尔补，为后面求解相机位姿+光度参数的正规方程做最后的准备
      *  参考博客：https://www.cnblogs.com/JingeTU/p/8586172.html
      * 
      * @param[in] p 
@@ -39,7 +39,6 @@ namespace dso
      */
 	void AccumulatedSCHessianSSE::addPoint(EFPoint *p, bool shiftPriorToZero, int tid)
 	{
-        // Step 1 遍历所有的残差，看是否有非active状态的残差
 		int ngoodres = 0;
 		for (EFResidual *r : p->residualsAll)
         {
@@ -50,6 +49,7 @@ namespace dso
         }
 
         //; 如果没有active状态的残差点，那么这里设置一下变量直接返回
+        //; 不知道为什么要统计这个，感觉正常情况下，这个是一定不会满足的
 		if (ngoodres == 0)
 		{
             //; 这里HdiF就是在正常计算hessian的时候，最后计算的hessian中关于行列都是逆深度的部分
@@ -61,7 +61,9 @@ namespace dso
 		}
 
 		//* hessian + 边缘化得到hessian + 先验hessian
-		//TODO 边缘化的先验和正常的先验的不同
+        //; Hdd_accAF：正常计算的本次逆深度hessian;
+        //; Hdd_accLF：边缘化的逆深度hessian，但是前面调用accumulateLF_MT，会把它设置成0
+        //; priorF：先验的逆深度，只有整个系统的第一帧有
 		float H = p->Hdd_accAF + p->Hdd_accLF + p->priorF;
 		if (H < 1e-10)
         {

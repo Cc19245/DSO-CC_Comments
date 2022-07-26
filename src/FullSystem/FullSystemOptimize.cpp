@@ -48,23 +48,25 @@ namespace dso
     /**
      * @brief 对残差进行线性化，实际上就是求雅克比
      * 
-     * @param[in] fixLinearization 
-     * @param[in] toRemove 
+     * @param[in] fixLinearization ？？
+     * @param[in] toRemove 判定为外点的那些残差，会去掉
      * @param[in] min  从哪个残差开始计算雅克比
      * @param[in] max  截止计算到哪个残差
      * @param[in] stats 
      * @param[in] tid 
-     */
+     */  
 	void FullSystem::linearizeAll_Reductor(bool fixLinearization, 
         std::vector<PointFrameResidual *> *toRemove, int min, int max, Vec10 *stats, int tid)
 	{
-        //; 遍历所有的残差计算雅克比
+        // 单线程就是从0开始到最后，遍历所有的残差计算雅克比
 		for (int k = min; k < max; k++)
 		{
-			PointFrameResidual *r = activeResiduals[k];
+			PointFrameResidual *r = activeResiduals[k];  // 取出当前的这个残差
+
             // Step 1 调用这个函数，内部真正计算雅克比，返回值就是这个残差构成的能量值
 			(*stats)[0] += r->linearize(&Hcalib); // 线性化得到能量
 
+            //; 固定线性化, 优化后执行？没太看懂
 			if (fixLinearization) // 固定线性化（优化后执行）
 			{
                 // Step 2 调用这个函数，把上面linearize计算的雅克比传给后端EFResidual
@@ -81,8 +83,9 @@ namespace dso
 						float relBS = 0.01 * ((ptp_inf.head<2>() / ptp_inf[2]) - (ptp.head<2>() / ptp[2])).norm(); // 0.01 = one pixel.
 
 						if (relBS > p->maxRelBaseline)
+                        {
 							p->maxRelBaseline = relBS; // 正比于点的基线长度
-
+                        }
 						p->numGoodResiduals++;
 					}
 				}
@@ -157,7 +160,7 @@ namespace dso
     /**
      * @brief 对残差进行线性化，实际上就是求雅克比
      * 
-     * @param[in] fixLinearization 
+     * @param[in] fixLinearization  是否固定线性化？？？
      * @return Vec3 
      */
 	Vec3 FullSystem::linearizeAll(bool fixLinearization)
@@ -168,7 +171,9 @@ namespace dso
 
 		std::vector<PointFrameResidual *> toRemove[NUM_THREADS];
 		for (int i = 0; i < NUM_THREADS; i++)
+        {
 			toRemove[i].clear();
+        }
 
 		if (multiThreading)
 		{
@@ -179,7 +184,7 @@ namespace dso
 		else
 		{
 			Vec10 stats;
-            //; 遍历所有残差，求这些残差的雅克比
+            // Step 1 遍历所有残差，对残差进行线性化，实际上就是求这些残差的雅克比
 			linearizeAll_Reductor(fixLinearization, toRemove, 0, activeResiduals.size(), &stats, 0);
 			lastEnergyP = stats[0];
 		}
@@ -213,6 +218,7 @@ namespace dso
 						ph->lastResiduals[1].first = 0;
 
 					for (unsigned int k = 0; k < ph->residuals.size(); k++)
+                    {
 						if (ph->residuals[k] == r)
 						{
 							ef->dropResidual(r->efResidual);
@@ -220,6 +226,7 @@ namespace dso
 							nResRemoved++;
 							break;
 						}
+                    }
 				}
 			}
 			//printf("FINAL LINEARIZATION: removed %d / %d residuals!\n", nResRemoved, (int)activeResiduals.size());
@@ -454,22 +461,29 @@ namespace dso
 		activeResiduals.clear();
 		int numPoints = 0;   // 没用
 		int numLRes = 0;     // 没用
-        //; 遍历所有关键帧上的所有地图点
+        // 遍历所有关键帧
 		for (FrameHessian *fh : frameHessians)
         {
+            // 遍历这个关键帧上所host的所有成熟点
 			for (PointHessian *ph : fh->pointHessians)
 			{
                 //; 这个地图点可以和其他很多的target帧上的点构成残差
 				for (PointFrameResidual *r : ph->residuals)
 				{
                     //; 只要没有线性化过，那么就把它加入到新的残差中
+                    //! 重要：这里的if一直满足
+                    // 公益群讲的这里是一直满足的。因为线性化isLinearized这个操作是每次滑窗优化之后进行边缘化的时候进行的，
+                    // 而被margin掉的点就是直接抛弃掉了，它的残差肯定也没了，所以剩下的这些残差一定都不是isLinearized的
 					if (!r->efResidual->isLinearized) // 没有求线性误差
 					{
 						activeResiduals.push_back(r); // 新加入的残差
 						r->resetOOB();				  // residual状态重置
 					}
 					else
-						numLRes++; //已经线性化过得计数
+                    {
+                        //? CC: 可以在这里添加打印语句，看是否会进入这个分支，判断上面的isLinearized是否一直满足
+                        numLRes++; //已经线性化过得计数
+                    }
 				}
 				numPoints++;
 			}
@@ -481,15 +495,19 @@ namespace dso
         }
 		
 		// Step 2 线性化activeResiduals的残差, 计算边缘化的能量值 (然而这里都设成0了)
-        //; 这里所说的线性化实际上就是求残差对状态变量的雅克比
+        //; 这里所说的线性化实际上就是求残差对状态变量的雅克比，而并不是边缘化等操作
         //    当前新关键帧的线性化点认为是track时候的位姿，就是第1步的位姿;
         //    其他关键帧的位姿就是FEJ的线性化点的位姿，都为worldToCam_evalPT
 		//* 线性化, 参数: [true是进行固定线性化, 并去掉不好的残差] [false不进行固定线性化]
+        //! 疑问：什么叫固定线性化、不固定线性化？
+        //; 目前来看这里的操作就是计算了每个残差的雅克比，存到了前端的残差类成员变量中，但是并没有传给后端优化的类
 		Vec3 lastEnergy = linearizeAll(false);
 
-		// Step 3 计算被固定线性化点的能量 和 边缘化先验的能量
+		// Step 3 计算 大的先验的能量 和 上次边缘化先验的能量（其实对求解没有那么重要）
         //; 存疑：这个到底算的是先验的能量还是线性化点的能量？
+        //; 解答：先验的能量，别看后面注释瞎扯淡
 		double lastEnergyL = calcLEnergy(); // islinearized的量的能量
+        //; 上次状态边缘化在这次的状态下产生的能量
 		double lastEnergyM = calcMEnergy(); // HM部分的能量
 
 		// 把线性化的结果给efresidual
@@ -499,11 +517,12 @@ namespace dso
         }
 		else
         {
-            //; 构建H矩阵所需要的所有中间变量
             // 所谓输出的中间量就是例如：残差对位姿的偏导的转置* 残差对逆深度的偏导等这类的东西。
             // 最后会在solveSystem函数里用到这些中间变量，其实所谓中间变量就是雅克比矩阵的一些组成元素。
-            //! 疑问：玄学啊，在上面linearizeAll函数内部，就已经调用了applyRes函数，而
-            //!  现在的applyRes_Reductor函数，内部也是调用applyRes这个函数啊？这不算了两次吗？
+            //; 注意上面linearizeAll函数内部计算了残差的雅克比，但是由于传入的实参是false，因此内部并没有
+            //; 调用applyRes把计算的雅克比传给后端优化，所以这里就调用applyRes_Reductor(内部调用applyRes)
+            //; 把这些残差都传递给后端优化的对象
+            //! 疑问：上面传入false的原因是什么？
             applyRes_Reductor(true, 0, activeResiduals.size(), 0, 0);
         }   
 			
@@ -527,8 +546,9 @@ namespace dso
 
 			// Step 3.2 求解系统
             //! 重点：内部求解系统
-            //; 此函数执行完毕后，就得到滑窗内所有帧的位姿+广度、相机内参、所有点的逆深度的增量
+            //; 此函数执行完毕后，就得到滑窗内所有帧的位姿+光度、相机内参、所有点的逆深度的增量
 			solveSystem(iteration, lambda);
+
 			double incDirChange = (1e-20 + previousX.dot(ef->lastX)) / 
                 (1e-20 + previousX.norm() * ef->lastX.norm()); // 两次下降方向的点积（dot/模长）
 			previousX = ef->lastX;
@@ -664,7 +684,7 @@ namespace dso
      */
 	void FullSystem::solveSystem(int iteration, double lambda)
 	{
-        // 1.求解之前先计算零空间
+        // 1.求解之前先计算零空间，目的是为了把后面计算出来的增量x向零空间投影，从而把零空间上的分量减去
 		ef->lastNullspaces_forLogging = getNullspaces(
 			ef->lastNullspaces_pose,
 			ef->lastNullspaces_scale,
@@ -680,8 +700,7 @@ namespace dso
 	{
 		if (setting_forceAceptStep)
 			return 0;
-        //; 调用后端的能量方程求解固定线性化点的能量
-        //; 貌似不对？这个求得好像是先验的能量吧？
+        //; 求先验的能量
 		double Ef = ef->calcLEnergyF_MT();
 		return Ef;
 	}

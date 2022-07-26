@@ -76,6 +76,7 @@ namespace dso
 		isNew = true;
 	}
 
+
 	//@ 求对各个参数的导数, 和能量值
     /**
      * @brief 后端滑窗优化的时候，计算点的残差对各个优化变量的雅克比
@@ -95,6 +96,7 @@ namespace dso
 			return state_energy;
 		}
 
+        //; 构成这个残差的两个帧之间相对量的一些与计算参数，就是在刚开始的时候调用setPrecalcValues函数里设置的
 		FrameFramePrecalc *precalc = &(host->targetPrecalc[target->idx]); // 得到这个目标帧在主帧上的一些预计算参数
 		float energyLeft = 0;											 
 		const Eigen::Vector3f *dIl = target->dI;
@@ -119,7 +121,9 @@ namespace dso
 			float Ku, Kv;  //; Ku,Kv是target帧上的像素坐标
 			Vec3f KliP;  //; KliP是host帧的归一化平面上的点
 
-            // Step 1 把当前点利用 线性化点处的状态 投影到target帧上
+            // Step 1 把当前点利用 线性化点处的状态 投影到target帧上，注意两个问题：
+            //; 1.这个投影包含的变量有相机位姿、逆深度、相机内参，而不包括像素梯度、光度
+            //; 2.这里使用的是边缘化的时候线性化点的状态，所以这里涉及 FEJ， 也就是对上述投影包含的变量使用了FEJ
 			if (!projectPoint(point->u, point->v, point->idepth_zero_scaled, 0, 0, HCalib,
 							  PRE_RTll_0, PRE_tTll_0, drescale, u, v, Ku, Kv, KliP, new_idepth))
 			{
@@ -128,8 +132,6 @@ namespace dso
 			} // 投影不在图像里, 则返回OOB
 
 			centerProjectedTo = Vec3f(Ku, Kv, new_idepth);
-
-			//TODO 这些在初始化都写过了又写一遍 !!! 放到一起好不好, ai
 
             // Step 2 求解像素点对各个状态的雅克比
 			//* 像素点对host上逆深度求导(由于乘了SCALE_IDEPTH倍, 因此乘上)
@@ -195,7 +197,7 @@ namespace dso
 			d_xi_y[5] = u * HCalib->fyl();
 		}
 
-        //; 把上面求导的中间变量结果放到类成员变量中
+        //; 把上面求导的中间变量结果放到类成员变量中，给后端优化计算Hessian和b的时候使用
 		{
             // 新帧上像素坐标对位姿导数, 2x6
 			J->Jpdxi[0] = d_xi_x;
@@ -216,14 +218,14 @@ namespace dso
 
 		float wJI2_sum = 0;
 
-        //; 遍历当前点周围的pattern点
+        //; 遍历当前点周围的pattern点，因为这里要算残差对各个中间变量的导数了，所以必须使用一个pattern的所有点
 		for (int idx = 0; idx < patternNum; idx++)
 		{
 			float Ku, Kv;
 			//? 为啥这里使用idepth_scaled, 上面使用的是zero； 
             // 答： 其实和上面一样的....同时调用了setIdepth() setIdepthZero()
 			// 答: 这里是求图像导数, 由于线性误差大, 就不使用FEJ, 所以使用当前的状态
-            //; 注意这里使用的是当前的状态
+            //; 注意这里使用的是当前的状态，也就是说，下面计算的状态的导数都没有使用 FEJ
 			if (!projectPoint(point->u + patternP[idx][0], point->v + patternP[idx][1], 
                 point->idepth_scaled, PRE_KRKiTll, PRE_KtTll, Ku, Kv))
 			{
@@ -242,6 +244,7 @@ namespace dso
             //; 对光度参数求导
 			//* 残差对光度仿射a求导
 			// 光度参数使用固定线性化点了
+            //! 没太懂这里
 			float drdA = (color[idx] - b0);
 
 			if (!std::isfinite((float)hitColor[0]))
@@ -262,7 +265,9 @@ namespace dso
 
 			{
 				if (hw < 1)
+                {
 					hw = sqrtf(hw);
+                }
 				hw = hw * w;
 
 				hitColor[1] *= hw;
@@ -271,12 +276,12 @@ namespace dso
 				// 残差 res*w*sqrt(hw)
 				J->resF[idx] = residual * hw;
 
-                // Step 2.4 Pattern的残差对像素点Pj'求导，VecNRf JIdx[2]， 2x8
+                // Step 2.4 Pattern的残差对像素点Pj'求导，VecNRf JIdx[2]， 8x2
 				// 图像导数 dx dy
 				J->JIdx[0][idx] = hitColor[1];
 				J->JIdx[1][idx] = hitColor[2];
 
-                // Step 2.5 Pattern的残差对广度求导，VecNRf JabF[2]， 2x8、
+                // Step 2.5 Pattern的残差对光度求导，VecNRf JabF[2]， 8x2
 				// 对光度合成后a b的导数 [Ii-b0  1]
 				// Ij - a*Ii - b  (a = tj*e^aj / ti*e^ai,   b = bj - a*bi)
 				//bug 正负号有影响 ???
@@ -286,7 +291,8 @@ namespace dso
 				J->JabF[1][idx] = hw;
 
                 
-                // Step 2.6 这里就是在计算涂金戈博客中写的789部分，比如2x8 * 8x2 = 2x2，所以这里用的是+=来累加
+                // Step 2.6 这里就是在计算涂金戈博客中写的789部分，比如2x8 * 8x2 = 2x2，
+                // Step    所以这里用的是+=来累加，相当于把向量乘法分解成标量相乘再累加的形式
 				// dIdx&dIdx hessian block
 				JIdxJIdx_00 += hitColor[1] * hitColor[1];
 				JIdxJIdx_11 += hitColor[2] * hitColor[2];
@@ -311,6 +317,8 @@ namespace dso
 		} // 遍历pattern结束
 
         //; 把上面pattern累加的2x8 * 8x2 = 2*2 等结果存入到类成员变量中
+        //; 注意这些类的成员变量命名很难懂，本质上是因为这些都是后面计算hessian的时候需要的中间变量，
+        //; 中间变量可能有2-3个雅克比相乘，这里命名确实搞不清楚。但是变量名写长点也能写清楚啊...
 		// 都是对host到target之间的变化量导数
 		J->JIdx2(0, 0) = JIdxJIdx_00;
 		J->JIdx2(0, 1) = JIdxJIdx_10;
@@ -335,7 +343,7 @@ namespace dso
 		}
 		else
 		{
-			state_NewState = ResState::IN;
+			state_NewState = ResState::IN;  //; 最新状态，设置为内点
 		}
 
 		state_NewEnergy = energyLeft;
@@ -383,11 +391,13 @@ namespace dso
         //; 调用的时候传入的都是true
 		if (copyJacobians)
 		{
+            //; 上次的状态是Out Of Boundary，即出界，那么直接返回
 			if (state_state == ResState::OOB)
 			{
 				assert(!efResidual->isActiveAndIsGoodNEW);
 				return; // can never go back from OOB
 			}
+            //; 如果最新状态是内点，那么把计算的雅克比传给后端优化的对象
 			if (state_NewState == ResState::IN) // && )
 			{
 				efResidual->isActiveAndIsGoodNEW = true;

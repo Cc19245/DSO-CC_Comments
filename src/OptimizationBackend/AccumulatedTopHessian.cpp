@@ -44,7 +44,7 @@ namespace dso
      * @tparam mode 
      * @param[in] p 
      * @param[in] ef 
-     * @param[in] tid 
+     * @param[in] tid 线程个数，默认实参=0
      */
 	template <int mode>  // 0 = active, 1 = linearized, 2=marginalize
 	void AccumulatedTopHessianSSE::addPoint(EFPoint *p, EnergyFunctional const *const ef, int tid) 
@@ -61,9 +61,11 @@ namespace dso
         //; 遍历这个点的所有残差
         //! 疑问：这个所有残差是什么意思？是这个点和其他帧上的点构成的残差？那岂不是同一个残差要多算一遍？
         //! 解答：目前感觉是这样的，因为看后面计算hessian的时候就能发现，他存储的hessian是8*8个，重复了一半
+        //! 最新解答：上面的 说法是错的。因为一个点只有一个host帧，我们对点计算的残差，都是以host帧上的点为出发点，
+        //!      所以不论这个点和其他多少个target帧构成残差，实际上这个残差都只会被计算一次，因为他只有一个host帧
 		for (EFResidual *r : p->residualsAll) // 对该点所有残差遍历一遍
 		{
-			//* 这个和运行的mode不一样, 又混了.....
+            //; 正常计算这次的状态的hessain的时候就是mode=0, 也就是不涉及边缘化、大的先验等其他任何操作
 			if (mode == 0) // 只计算新加入的残差
 			{
 				if (r->isLinearized || !r->isActive())
@@ -73,6 +75,11 @@ namespace dso
 			}
 			if (mode == 1) // bug: 这个条件就一直满足 计算旧的残差, 之前计算过得
 			{
+                //; 这里注意，确实是上面公益群注释的那样。因为mode=1的模式下，比如在计算完正常的Hessian之后
+                //; 调用accumulateLF_MT计算线性化的Hessian的时候，传入的mode=1。但是其实由于边缘化的点全部
+                //; 被丢掉了，所以这里isLinearized一直为false，也就是下面一直continue，所以就不会计算这个点
+                //; 的结果。因此，最后赋值给p->Hdd_accLF、p->bd_accLF = bd_acc、p->Hcd_accLF = Hcd_acc
+                //; 全是0
 				if (!r->isLinearized || !r->isActive())
                 {
                     continue;
@@ -92,11 +99,13 @@ namespace dso
             //; 取出之间计算的雅克比中间量
 			RawResidualJacobian *rJ = r->J; // 导数
 			//* ID 来控制不同帧之间的变量, 区分出相同两帧 但是host target角色互换的
-			int htIDX = r->hostIDX + r->targetIDX * nframes[tid];
-			Mat18f dp = ef->adHTdeltaF[htIDX]; // 位姿+光度a b
+            //; htIDX就得到了这个残差在acc累加器数组中在那个位置
+			int htIDX = r->hostIDX + r->targetIDX * nframes[tid];  //; 注意tid默认实参=0，nframes[0]就是所有关键帧个数
+			//; 这个是当前状态相比线性化点的状态所增加的状态量，也是在之前调用 setPrecalcValues 预先计算的
+            Mat18f dp = ef->adHTdeltaF[htIDX]; // 位姿+光度a b
 
             //; VecNRf 8x1向量
-			VecNRf resApprox;
+			VecNRf resApprox;  // 8x1的残差，就是pattern周围的残差
             //; active活跃点的情况最简单，直接就是之前计算的雅克比
 			if (mode == 0)  
 				resApprox = rJ->resF;
@@ -148,7 +157,7 @@ namespace dso
                 //; 这里涂金戈博客好像说的不对，这里就是2x8的残差对像素坐标 * 8x1的残差，得到残差对像素坐标的雅克比的和
 				JI_r[0] += resApprox[i] * rJ->JIdx[0][i];
 				JI_r[1] += resApprox[i] * rJ->JIdx[1][i];
-                //; 同理这里就是2x8的残差对广度系数 * 8x1的残差，得到残差对光度系数的和
+                //; 同理这里就是2x8的残差对光度系数 * 8x1的残差，得到残差对光度系数的和
 				Jab_r[0] += resApprox[i] * rJ->JabF[0][i];
 				Jab_r[1] += resApprox[i] * rJ->JabF[1][i];
                 //; 这里就是1x8的残差 * 8x1的残差，得到最后残差的和
@@ -159,6 +168,8 @@ namespace dso
             //; 计算左上角10x10矩阵，传入的是 target帧像素对相机内参偏导、target帧像素对相对位姿偏导、残差对target帧像素偏导
 			//* 计算hessian 10*10矩阵, [位姿+相机参数]
 			acc[tid][htIDX].update(
+                //; Jpdc = dx/dc, 2x4; Jpdxi = dx/dξ, 2x6; JIdx2 = (dr/dx)'*(dr/dx)^2 = 2x2
+                //; r残差, x是target帧像素坐标，c相机内参，ξ相机位姿
 				rJ->Jpdc[0].data(), rJ->Jpdxi[0].data(),
 				rJ->Jpdc[1].data(), rJ->Jpdxi[1].data(),
                 //; 注意这里传入的残差对像素坐标的偏导，已经是一个pattern内的和了
@@ -167,12 +178,17 @@ namespace dso
             //; 计算右下角3x3矩阵
 			//* 计算 3*3 矩阵, [光度a, 光度b, 残差r]
 			acc[tid][htIDX].updateBotRight(
+                //; Jab2 = (dr/dl)' * (dr/dl), 2x2; Jab_r = (dr/dl)' * r, 2x1; rr=r'*r, 1x1
+                //; r残差，l光度系数
 				rJ->Jab2(0, 0), rJ->Jab2(0, 1), Jab_r[0],
 				rJ->Jab2(1, 1), Jab_r[1], rr);
 
             //; 计算右上角10x3矩阵
 			//* 计算 10*3 矩阵, [位姿+相机参数]*[光度a, 光度b, 残差r]
 			acc[tid][htIDX].updateTopRight(
+                //; Jpdc = dx/dc, 2x4; Jpdxi = dx/dξ, 2x6; JabJIdx = (dr/dl)' * (dr/dx), 2x2; 
+                //; JI_r = (dr/dx)'*r, 2x1
+                //; 
 				rJ->Jpdc[0].data(), rJ->Jpdxi[0].data(),
 				rJ->Jpdc[1].data(), rJ->Jpdxi[1].data(),
 				rJ->JabJIdx(0, 0), rJ->JabJIdx(0, 1),
@@ -199,7 +215,7 @@ namespace dso
             Hcd_acc += rJ->Jpdc[0] * Ji2_Jpdd[0] + rJ->Jpdc[1] * Ji2_Jpdd[1]; //* 光度对内参J*光度对逆深度J
 
 			nres[tid]++;
-		}
+		} // 遍历这个点构成的所有残差完毕
 
 		if (mode == 0)
 		{
@@ -328,9 +344,10 @@ namespace dso
 			int h = k % nframes[0]; // 和两个循环一样
 			int t = k / nframes[0];
 
+            //; 在整个大的H中的索引，整个大的H中左上角存储相机内参部分
 			int hIdx = CPARS + h * 8; // 起始元素id
 			int tIdx = CPARS + t * 8;
-            //; 总id，靠，这不就是k吗？
+            // 总id，靠，这不就是k吗？
 			int aidx = h + nframes[0] * t; // 总的id
 
 			assert(aidx == k);   // 确实是k, 无语，再算一下干啥？
@@ -378,12 +395,13 @@ namespace dso
 
 
             // Step 3 b部分累加
+            // 1.host部分，比如(4+8*2, 0)位置
 			b[tid].segment<8>(hIdx).noalias() += 
                 EF->adHost[aidx] * accH.block<8, 1>(CPARS, CPARS + 8);
-
+            // 2.target部分，比如(4+8*5, 0)位置
 			b[tid].segment<8>(tIdx).noalias() += 
                 EF->adTarget[aidx] * accH.block<8, 1>(CPARS, CPARS + 8);
-
+            // 3.内参部分，比如(0, 0)位置
 			b[tid].head<CPARS>().noalias() += 
                 accH.block<CPARS, 1>(0, CPARS + 8); // 残差 * 内参
 		}

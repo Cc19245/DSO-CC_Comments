@@ -64,6 +64,7 @@ namespace dso
 
 		inline void setZero(int n, int min = 0, int max = 1, Vec10 *stats = 0, int tid = 0)
 		{
+            //; n是传入的数组个数，舒尔消元在计算正常的H之后紧接着进行，所以这里不会满足这个条件
 			if (n != nframes[tid]) // 如果帧数有变化
 			{
 				if (accE[tid] != 0)
