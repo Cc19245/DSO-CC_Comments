@@ -271,7 +271,7 @@ namespace dso
 		CoarseTracker *coarseTracker;		   // always used to track new frames. protected by [trackMutex].
 		float minIdJetVisTracker, maxIdJetVisTracker;
 		float minIdJetVisDebug, maxIdJetVisDebug;
-
+ 
 		// mutex for camToWorl's in shells (these are always in a good configuration).
 		boost::mutex shellPoseMutex;
 
