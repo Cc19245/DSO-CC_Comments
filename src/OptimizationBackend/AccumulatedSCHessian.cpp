@@ -32,7 +32,8 @@ namespace dso
     /**
      * @brief 对逆深度执行舒尔补，为后面求解相机位姿+光度参数的正规方程做最后的准备
      *  参考博客：https://www.cnblogs.com/JingeTU/p/8586172.html
-     * 
+     *   注意：这里面仍然是对每个残差构成的小的13x13的hessian进行舒尔补，然后再把这些小的hessian拼接成
+     *         绝对状态的他的hessian，而不是直接在大的hessian上进行舒尔补
      * @param[in] p 
      * @param[in] shiftPriorToZero 
      * @param[in] tid 多线程？形参默认值是0
@@ -61,9 +62,13 @@ namespace dso
 		}
 
 		//* hessian + 边缘化得到hessian + 先验hessian
-        //; Hdd_accAF：正常计算的本次逆深度hessian;
-        //; Hdd_accLF：边缘化的逆深度hessian，但是前面调用accumulateLF_MT，在里面没有实质操作，会把它设置成0
+        //; Hdd_accAF：正常计算的本次逆深度hessian，它是在计算每个点的每个残差的hessian的时候累加的
+        //; Hdd_accLF：上次margin边缘化的逆深度hessian，但是前面调用accumulateLF_MT，在里面没有实质操作，会把它设置成0
         //; priorF：先验的逆深度，只有整个系统的第一帧有
+        //! 7.27增：点的逆深度hessian是在前面调用accumulateAF_MT时，累加它构成的所有残差的hessian得到的，为什么可以累加？
+        //;  解答：尽管这个点包含的所有残差和host/target帧有关，也就是accumulateAF_MT里对同一个点的不同残差得到的
+        //;     13x13的hessian，是和不同的帧有关的。但是他们的逆深度部分都是关于这一个点的，也就是行、列均为逆深度
+        //;     的位置，即右下角(13, 13)位置都是(dr/rρ)' * (dr/dρ)，因此最后把所有小的hessian拼接起来的时候他们是可以相加的
 		float H = p->Hdd_accAF + p->Hdd_accLF + p->priorF;
 		if (H < 1e-10)
         {
@@ -89,25 +94,27 @@ namespace dso
 		//* 逆深度和内参的交叉项
         //; 1. 这里注意，在之前计算H中和逆深度同一行的W'(见深蓝PPT P12关于H矩阵的划分)的时候，只计算了内参部分
         //;    我感觉可能是因为那里计算的相机状态的H部分是相对状态量，而这里是绝对状态量，所以在那里计算无意义？
-        //!  7.26增：不是的！本质上还是因为所有帧都共享同一个相机内参，所以在之前计算H的时候直接就累加相机内参的舒尔补
-        //;         是可行的。如果不累加那个舒尔补，在这里再次遍历点的所有残差的时候再累加也行，但是这样就需要
-        //;         8*8的hessian中每个hessian都要维护相机内参的舒尔补，浪费空间
+        //!  7.26增：不是的！
+        //;     本质上还是因为所有帧都共享同一个相机内参，所以在之前计算H的时候直接就累加相机内参的舒尔补
+        //;     是可行的。如果不累加那个舒尔补，在这里再次遍历点的所有残差的时候再累加也行，但是这样就需要
+        //;     8*8的hessian中每个hessian都要维护相机内参的舒尔补，浪费空间
         //; 2. 同理，Hcd_accAF是active状态正常计算的；Hcd_accLF是调用accumulateLF_MY，在里面没有实质操作，会把它设置成0
 		VecCf Hcd = p->Hcd_accAF + p->Hcd_accLF;
 
         // Step 执行舒尔补
 		//* schur complement
-        // Step 1 当前这个点的逆深度对H中  (相机内参, 相机内参)  位置的舒尔补，对应深蓝学院PPT P36中的accHc
+        // Step 1 对相机内参部分舒尔补
+        //   Step 1.1 当前这个点的逆深度对H中  (相机内参, 相机内参)  位置的舒尔补，对应深蓝学院PPT P36上面的accHc
         // Hcd * Hdd_inv * Hcd^T
 		accHcc[tid].update(Hcd, Hcd, p->HdiF);
-        // Step 2 当前这个点的逆深度对b中  (相机内参, 0)  位置的舒尔补，对应深蓝学院PPT P36中的accbc
-        //! 注意：这里的列数位置一直是0，因为b部分是一个列向量
+        //   Step 1.2 当前这个点的逆深度对b中  (相机内参, 0)  位置的舒尔补，对应深蓝学院PPT P36上面的accbc
+        //;        注意：这里的列数位置一直是0，因为b部分是一个列向量
 		// Hcd * Hdd_inv * bd
 		accbc[tid].update(Hcd, p->bdSumF * p->HdiF);
 
 		assert(std::isfinite((float)(p->HdiF)));
 
-        // Step 3 当前这个点的逆深度对H和b中相机位姿、光度位置的舒尔补，对应深蓝学院PPT P36中的accD accE accEB
+        // Step 2 当前这个点的逆深度对H和b中相机位姿、光度位置的舒尔补，对应深蓝学院PPT P36上面的accD accE accEB
         //; 总的帧数，正常运行状态下应该是8*8
 		int nFrames2 = nframes[tid] * nframes[tid];
         //; 遍历当前点构成的所有残差，其实也就是当前点的host帧和可能的滑窗中其他关键帧之间构成的残差
@@ -130,6 +137,7 @@ namespace dso
 					continue;
                 }
                 // Hfd_1 * Hdd_inv * Hfd_2^T,  f = [xi, a b]位姿 光度
+                //; r1ht表示以当前残差为参照，后面的附加项表示其他所有残差(包括当前残差)，就相当于第1行的所有列
 				accD[tid][r1ht + r2->targetIDX * nFrames2].update(r1->JpJdF, r2->JpJdF, p->HdiF);
 			}
 

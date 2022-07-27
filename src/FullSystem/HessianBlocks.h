@@ -487,6 +487,7 @@ namespace dso
 		float idepth_backup;	  //!< 上一次的逆深度值
 
 		float nullspaces_scale; //!< 零空间 ?
+        //; 这个点所构成的所有残差的逆深度的hessian的和
 		float idepth_hessian;	//!< 对应的hessian矩阵值
 		float maxRelBaseline;	//!< 衡量该点的最大基线长度
 		int numGoodResiduals;

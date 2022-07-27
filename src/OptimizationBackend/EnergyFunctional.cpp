@@ -86,6 +86,11 @@ namespace dso
 				// 见笔记推导吧, 或者https://www.cnblogs.com/JingeTU/p/9077372.html
 				//* 转置是因为后面stitchDoubleInternal计算hessian时候就不转了
 				//; T_th关于T_hw的偏导
+                //TODO: 注意这里把伴随矩阵取了转置，所以在后面根据相对Hessian求绝对Hessian的时候，正常应该是
+                //;     H_abs = Ad' * H_rel * Ad, 而这里取了转置之后，代码中就变成 H_abs = Ad * H_rel * Ad'了
+                //;     我感觉应该纯粹是为了写代码好写，这样每次都把转置放到最后写就行了，不容易忘。
+                //;  另外只需要这里取转置即可，因为光度的伴随是俩常数，恰好在8x8矩阵对角线上。而关于target的伴随则
+                //;  是单位阵，取不取转置无所谓
 				AH.topLeftCorner<6, 6>() = -hostToTarget.Adj().transpose();   //; 这里Adj就是直接调用sophus库求伴随矩阵
 				//; T_th关于T_tw的偏导
 				AT.topLeftCorner<6, 6>() = Mat66::Identity();

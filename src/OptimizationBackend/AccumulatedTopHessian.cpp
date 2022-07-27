@@ -398,6 +398,8 @@ namespace dso
             //! 注意：好像仍然只是算了对角线的一边，另一边没有算？
             //   Step 2.1 单纯的相机位姿+光度部分
             // 1.host-host部分，比如(4+8*2, 4+8*2)位置
+            //TODO 为什么下面的公式和自己推导的不一样？host/target的伴随应该加转置，下面的恰恰没有转置
+            //; CC解答：去看伴随的求法，代码中故意把伴随公式取了转置，我感觉就是为了这里写代码好些，这样把转置放在最后面即可
 			H[tid].block<8, 8>(hIdx, hIdx).noalias() += 
                 EF->adHost[aidx] * accH.block<8, 8>(CPARS, CPARS) * EF->adHost[aidx].transpose();
             // 2.target-target部分，比如(4+8*5, 4+8*5)位置
@@ -437,7 +439,7 @@ namespace dso
 		if (min == 0 && usePrior)
 		{
             //; 以下内容参见深蓝PPT P40, 可以对应的很好
-            // 1.相机内参的先验hessian,
+            // 1.相机内参的先验hessian, 注意这个是hessian矩阵，而不是状态增量
 			H[tid].diagonal().head<CPARS>() += EF->cPrior;		// hessian先验
             //; b就是先验 H * 当前值和先验的残差e
 			b[tid].head<CPARS>() += EF->cPrior.cwiseProduct(EF->cDeltaF.cast<double>()); // H*delta 更新残差
@@ -445,7 +447,10 @@ namespace dso
             // 2.每个帧的位姿和光度先验信息
             for (int h = 0; h < nframes[tid]; h++)
 			{
+                //; 相机状态的的先验hessian矩阵，但是位姿部分除了第1帧其他全都是0，而光度部分一直都有
 				H[tid].diagonal().segment<8>(CPARS + h * 8) += EF->frames[h]->prior; // hessian先验
+                //; 这里的delta_prior就是最新的状态，因为他每次给的先验都是返回0
+                //TODO 这里可以assert看一下是不是delta_prior == 最新状态
 				b[tid].segment<8>(CPARS + h * 8) += EF->frames[h]->prior.cwiseProduct(EF->frames[h]->delta_prior);
 			}
 		}

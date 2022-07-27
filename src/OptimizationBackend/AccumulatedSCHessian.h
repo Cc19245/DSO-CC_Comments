@@ -161,6 +161,8 @@ namespace dso
 
 		AccumulatorXX<8, CPARS> *accE[NUM_THREADS]; //!< 位姿和内参关于逆深度的 Schur
 		AccumulatorX<8> *accEB[NUM_THREADS];		//!< 位姿光度关于逆深度的 b*Schur
+        //; 指针数组，相当于二维数组了，第1个维度是NUM_THREADS个线程的数组
+        //; 第2个维度就是每个线程的数组
 		AccumulatorXX<8, 8> *accD[NUM_THREADS];		//!< 两位姿光度关于逆深度的 Schur
 
 		AccumulatorXX<CPARS, CPARS> accHcc[NUM_THREADS]; //!< 内参关于逆深度的 Schur

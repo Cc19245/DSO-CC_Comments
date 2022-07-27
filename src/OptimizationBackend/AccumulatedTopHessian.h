@@ -145,7 +145,8 @@ namespace dso
 			{
 				int hIdx = CPARS + h * 8;  
 
-                // Step 2.1 先拷贝内参位置的部分，也就是上面4行和左边4列是对称的
+                // Step 2.1 先拷贝内参位置的部分，也就是上面4行和左边4列是对称的，但是在上面拼接的时候
+                //    Step  是给左边四列赋值，所以这里要把左边四列赋值给上边四行
                 //; noalias声明没有混淆，否则可能会出现赋值错误的情况
                 // [内参, 位姿] 对称部分
 				H.block<CPARS, 8>(0, hIdx).noalias() = H.block<8, CPARS>(hIdx, 0).transpose(); 
