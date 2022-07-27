@@ -155,15 +155,21 @@ namespace dso
 
 
 	//@ 边缘化一个关键帧, 删除该帧上的残差
+    /**
+     * @brief 边缘化掉一个关键帧
+     * 
+     * @param[in] frame 
+     */
 	void FullSystem::marginalizeFrame(FrameHessian *frame)
 	{
 		// marginalize or remove all this frames points.
 		assert((int)frame->pointHessians.size() == 0);
 
+        // Step 1 本质还是调用后端的边缘化函数，来对H进行舒尔补
 		ef->marginalizeFrame(frame->efFrame);
 
 		// drop all observations of existing points in that frame.
-		//* 删除其它帧在被边缘化帧上的残差
+		// Step 2 删除其它帧在被边缘化帧上的残差
 		for (FrameHessian *fh : frameHessians)
 		{
 			if (fh == frame)
@@ -210,6 +216,7 @@ namespace dso
 			frameHessians[i]->idx = i;
         }
         
+        // Step 3 重新设置预计算值
 		setPrecalcValues();
 		ef->setAdjointsF(&Hcalib);
 	}

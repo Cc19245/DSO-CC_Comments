@@ -727,6 +727,12 @@ namespace dso
 
 
 	//@ 去除外点(残差数目变为0的)
+    /**
+     * @brief 前端筛选PointHessian没有构成残差的那些点，自然就是外点了。
+     *  把他们的标志设置为丢弃，然后调用后端的能量函数，在后端能量函数求解中根据前端设置
+     *  的标志位真正丢弃。
+     * 
+     */
 	void FullSystem::removeOutliers()
 	{
 		int numPointsDropped = 0;
@@ -739,7 +745,8 @@ namespace dso
                 {
 					continue;
                 }
-                
+                //! 疑问：这里判断外点的条件是前端的点构成的残差为0，而下面dropPointsF在后端删除点的时候
+                //!     其删除的也是这个能量点构成的所有残差，这样不是重复了吗？
 				if (ph->residuals.size() == 0) // 如果该点的残差数为0, 则丢掉
 				{
 					fh->pointHessiansOut.push_back(ph);

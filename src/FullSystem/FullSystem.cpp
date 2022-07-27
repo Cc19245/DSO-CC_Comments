@@ -760,6 +760,10 @@ namespace dso
 
 
 	//@ 标记要移除点的状态, 边缘化or丢掉
+    /**
+     * @brief 
+     * 
+     */
 	void FullSystem::flagPointsForRemoval()
 	{
 		assert(EFIndicesValid);
@@ -769,6 +773,7 @@ namespace dso
 
 		//if(setting_margPointVisWindow>0)
 		{ //bug 又是不用的一条语句
+            //! 靠，确实是bug啊，这个i指向最新帧索引，还要>=最新帧个数，肯定不满足啊？？
 			for (int i = ((int)frameHessians.size()) - 1; i >= 0 && i >= ((int)frameHessians.size()); i--)
 			{
             	if (!frameHessians[i]->flaggedForMarginalization)
@@ -776,6 +781,7 @@ namespace dso
 					fhsToKeepPoints.push_back(frameHessians[i]);
                 }
             }
+            // Step 1 遍历所有帧，之前被标记要margin的点存入数组中
 			for (int i = 0; i < (int)frameHessians.size(); i++)
 			{
                 if (frameHessians[i]->flaggedForMarginalization)
@@ -789,7 +795,7 @@ namespace dso
 		//ef->setDeltaF(&Hcalib);
 		int flag_oob = 0, flag_in = 0, flag_inin = 0, flag_nores = 0;
 
-        //; 遍历所有关键帧
+        // Step 2 遍历所有关键帧上持有的地图点，标记要边缘化/删除的点
 		for (FrameHessian *host : frameHessians) // go through all active frames
 		{
             //; 遍历这个关键帧持有的所有点
@@ -800,7 +806,10 @@ namespace dso
                 {
 					continue;
                 }
+                
+                // Step 2.1 不正常的点直接丢掉
 				//* 丢掉相机后面, 没有残差的点
+                //; 后面残差为0的这个条件，在之前移除外点的时候就是用它判断的，怎么可能还存在？
 				if (ph->idepth_scaled < 0 || ph->residuals.size() == 0)
 				{
 					host->pointHessiansOut.push_back(ph);
@@ -808,9 +817,9 @@ namespace dso
 					host->pointHessians[i] = 0;
 					flag_nores++;
 				}
+                // Step 2.2 边缘化的帧上持有的所有点，内点则边缘化掉，外点则直接丢掉
 				//* 把边缘化的帧上的点, 以及受影响较大的点标记为边缘化or删除
-                //; OOB是Out Of Boundary，也就是点投影下来没有落到视场内，因此没有构成残差项
-                //; 
+                //; OOB是Out Of Boundary，也就是点投影下来没有落到视场内，因此没有构成残差项 
 				else if (ph->isOOB(fhsToKeepPoints, fhsToMargPoints) || host->flaggedForMarginalization)
 				{
 					flag_oob++;
@@ -822,13 +831,18 @@ namespace dso
 						for (PointFrameResidual *r : ph->residuals)
 						{
 							r->resetOOB();
+                            //; 计算雅克比，并且传给后端优化
 							r->linearize(&Hcalib);
-							r->efResidual->isLinearized = false;
+							r->efResidual->isLinearized = false;  //; 注意这里给了false，就离谱，感觉大家全是false
 							r->applyRes(true);
+                            //; 这里的判断是有道理的，也就是之前是激活的残差，那么在这里就要把他线性化固定住
+                            //; 如果不是激活的残差(即已经线性化过的残差)，这里就不用重复线性化了
 							// 如果是激活(可参与优化)的残差, 则给fix住, 计算res_toZeroF
 							if (r->efResidual->isActive())
 							{
-								r->efResidual->fixLinearizationF(ef);
+                                //! 注意：上面说的大家都是false是错的，下面这个函数里面就会把相关的点isLinearized=true
+								//; 这个函数内部做的主要工作就是把这个点的当前残差值 - J*dx，恢复到线性化点的那个值
+                                r->efResidual->fixLinearizationF(ef);
 								ngoodRes++;
 							}
 						}
@@ -1269,8 +1283,12 @@ namespace dso
 
 		// Step 8  去除外点, 把最新帧设置为参考帧
 		// =========================== REMOVE OUTLIER =========================
-		removeOutliers();
+		// Step 8.1 去除外点，内部判断使用前端的点的残差个数为0，后端删除的时候又是用后端能量的残差个数为0，有点搞不懂
+        //! 疑问：前端残差为0，是什么时候标记的？
+        removeOutliers();
 		{
+            // Step 8.2 把最新帧设置为参考关键帧，为下一帧的前端跟踪使用
+            //; 这里见深蓝学院PPT P17上面(这页PPT放的位置不对，当时看的就很懵逼)
 			boost::unique_lock<boost::mutex> crlock(coarseTrackerSwapMutex);
 			coarseTracker_forNewKF->makeK(&Hcalib); // 更新了内参, 因此重新make
 			coarseTracker_forNewKF->setCoarseTrackingRef(frameHessians);
@@ -1283,19 +1301,23 @@ namespace dso
 
 		// Step 9  标记删除和边缘化的点, 并删除&边缘化
 		// =========================== (Activate-)Marginalize Points =========================
-		flagPointsForRemoval();
+		// Step 9.1 遍历边缘化帧上的点，根据其情况选择边缘化掉还是丢掉，边缘化掉的点要重新计算其在边缘化状态的残差
+        flagPointsForRemoval();
 		ef->dropPointsF(); // 扔掉drop的点
-		// 每次设置线性化点都会更新零空间
+        // Step 9.2 更新零空间
+        // 每次设置线性化点都会更新零空间
 		getNullspaces(
 			ef->lastNullspaces_pose,
 			ef->lastNullspaces_scale,
 			ef->lastNullspaces_affA,
 			ef->lastNullspaces_affB);
+        // Step 9.3 真正执行对点的边缘化操作，其中就是对这个点构成的残差计算雅克比，然后再算H和b
+        //     Step 然后把这个点舒尔补边缘化掉，得到的剩余的H和b累加到HM和bM上
 		// 边缘化掉点, 加在HM, bM上
 		ef->marginalizePointsF();  //; 边缘化不需要的点
 
 
-		// Step 10  生成新的点
+		// Step 10 在最新帧上提取新的未成熟点，用于下次跟踪(否则点越来越少了)
 		// =========================== add new Immature points & new residuals =========================
 		makeNewTraces(fh, 0);
 
@@ -1314,7 +1336,7 @@ namespace dso
 			if (frameHessians[i]->flaggedForMarginalization)
 			{
 				marginalizeFrame(frameHessians[i]);  //; 边缘化掉关键帧
-				i = 0;
+				i = 0;  // i = 0? 操什么骚操作啊？
 			}
         }
 		printLogLine();

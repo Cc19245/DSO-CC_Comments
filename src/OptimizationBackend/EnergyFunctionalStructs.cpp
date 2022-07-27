@@ -100,32 +100,41 @@ namespace dso
 	}
 
 	//@ 计算线性化更新后的残差,
-	//! 没平方叫残差, 平方叫能量
+	/**
+	 * @brief 计算某个点构成的能量残差在线性化点的处的残差，因为优化之后重新把他线性化了
+	 * 
+	 * @param[in] ef 
+	 */
 	void EFResidual::fixLinearizationF(EnergyFunctional *ef)
 	{
 		Vec8f dp = ef->adHTdeltaF[hostIDX + ef->nFrames * targetIDX]; // 得到hostIDX --> targetIDX的状态增量
 
 		// compute Jp*delta
+        //; Jpdxi: dx/dξ, dp:前六维就是dξ； Jpdc: dx/dc, cDeltaF: 相机内参相对先验的增量； 
+        //; Jpdd:  dx/d_rou, deltaF: 逆深度增量
 		__m128 Jp_delta_x = _mm_set1_ps(J->Jpdxi[0].dot(dp.head<6>()) + J->Jpdc[0].dot(ef->cDeltaF) + J->Jpdd[0] * point->deltaF);
 		__m128 Jp_delta_y = _mm_set1_ps(J->Jpdxi[1].dot(dp.head<6>()) + J->Jpdc[1].dot(ef->cDeltaF) + J->Jpdd[1] * point->deltaF);
-		__m128 delta_a = _mm_set1_ps((float)(dp[6]));
+		__m128 delta_a = _mm_set1_ps((float)(dp[6]));  //; 这两个是光度的增量
 		__m128 delta_b = _mm_set1_ps((float)(dp[7]));
 
+        //; 算这个点周围一个pattern一共8个点构成的值
 		for (int i = 0; i < patternNum; i += 4)
 		{
 			// PATTERN: rtz = resF - [JI*Jp Ja]*delta.
+            //; resF就是光度残差，是一个8x1向量，但是这里用指针把其中每个元素都取出来了
 			__m128 rtz = _mm_load_ps(((float *)&J->resF) + i); // 光度残差
-			//! res - J * delta_x
+			
+            //? res - J * delta_x
+            //; 下面的公式确实就是resF - J*dx。 JIdx: dr/dx;  JabF: dr/dl
 			rtz = _mm_sub_ps(rtz, _mm_mul_ps(_mm_load_ps(((float *)(J->JIdx)) + i), Jp_delta_x));
 			rtz = _mm_sub_ps(rtz, _mm_mul_ps(_mm_load_ps(((float *)(J->JIdx + 1)) + i), Jp_delta_y));
 			rtz = _mm_sub_ps(rtz, _mm_mul_ps(_mm_load_ps(((float *)(J->JabF)) + i), delta_a));
 			rtz = _mm_sub_ps(rtz, _mm_mul_ps(_mm_load_ps(((float *)(J->JabF + 1)) + i), delta_b));
-			_mm_store_ps(((float *)&res_toZeroF) + i, rtz); // 存储在res_toZeroF
-															// if(res_toZeroF[i] > J->resF[i])
-															// printf("true");
+			
+            //; 把上面计算的残差结果存到res_toZeroF中
+            _mm_store_ps(((float *)&res_toZeroF) + i, rtz); // 存储在res_toZeroF
+  
 		}
-
-		// std::cout<<"resF: "<<J->resF<<" ||   res_toZeroF "<<res_toZeroF<<std::endl;
 		isLinearized = true;
 	}
 

@@ -662,6 +662,7 @@ namespace dso
 
 		assert(HM.cols() == 8 * nFrames + CPARS - 8); // 边缘化掉一帧, 缺8个
 
+        //! 重要：上次边缘化之后，HM和bM的维度缩减了一帧的维度，因为这里加入的最新帧，所以要把HM和bM维度重新扩张
 		//; resize优化变量的维数，一个帧8个参数 + 相机内参（4维）
 		bM.conservativeResize(8 * nFrames + CPARS);
 		HM.conservativeResize(8 * nFrames + CPARS, 8 * nFrames + CPARS);
@@ -744,10 +745,16 @@ namespace dso
 		delete r;
 	}
 
+
 	//@ 边缘化掉一帧 fh
+    /**
+     * @brief 边缘化掉一个关键帧，也就是对之前边缘化掉点得到的HM和bM，把要边缘化的那个关键帧的位置
+     *   使用舒尔补消掉，此时得到新的HM和bM，注意此时的HM和bM维度就缩减了！
+     * 
+     * @param[in] fh 
+     */
 	void EnergyFunctional::marginalizeFrame(EFFrame *fh)
 	{
-
 		assert(EFDeltaValid);
 		assert(EFAdjointsValid);
 		assert(EFIndicesValid);
@@ -756,11 +763,7 @@ namespace dso
 		int ndim = nFrames * 8 + CPARS - 8; // new dimension
 		int odim = nFrames * 8 + CPARS;		// old dimension
 
-		//	VecX eigenvaluesPre = HM.eigenvalues().real();
-		//	std::sort(eigenvaluesPre.data(), eigenvaluesPre.data()+eigenvaluesPre.size());
-		//
-
-		//[ ***step 1*** ] 把边缘化的帧挪到最右边, 最下边
+		// Step 1 把边缘化的帧挪到最右边, 最下边
 		//* HM bM就是边缘化点得到的
 		if ((int)fh->idx != (int)frames.size() - 1)
 		{
@@ -785,7 +788,7 @@ namespace dso
 			HM.bottomRows(8) = HtmpRow;
 		}
 
-		//[ ***step 2*** ] 加上先验
+		// Step 2 加上先验
 		//* 如果是初始化得到的帧有先验, 边缘化时需要加上. 光度也有先验
 		// marginalize. First add prior here, instead of to active.
 		HM.bottomRightCorner<8, 8>().diagonal() += fh->prior;
@@ -793,37 +796,43 @@ namespace dso
 
 		//	std::cout << std::setprecision(16) << "HMPre:\n" << HM << "\n\n";
 
-		//[ ***step 3*** ] 先scaled 然后计算Schur complement
+		// Step 3 先scaled 然后计算Schur complement
 		VecX SVec = (HM.diagonal().cwiseAbs() + VecX::Constant(HM.cols(), 10)).cwiseSqrt();
-		VecX SVecI = SVec.cwiseInverse();
+		VecX SVecI = SVec.cwiseInverse();  //; 上面缩放系数的逆，用于舒尔消元之后再缩放回原来正常的大小
 
 		//	std::cout << std::setprecision(16) << "SVec: " << SVec.transpose() << "\n\n";
 		//	std::cout << std::setprecision(16) << "SVecI: " << SVecI.transpose() << "\n\n";
 
+        //; 对HM和bM进行缩放，然后再进行舒尔消元
 		// scale!
 		MatXX HMScaled = SVecI.asDiagonal() * HM * SVecI.asDiagonal();
 		VecX bMScaled = SVecI.asDiagonal() * bM;
 
+        //; 计算右下角要舒尔消元的H部分的逆
 		// invert bottom part!
 		Mat88 hpi = HMScaled.bottomRightCorner<8, 8>();
 		hpi = 0.5f * (hpi + hpi);
 		hpi = hpi.inverse();
 		hpi = 0.5f * (hpi + hpi);
 
+        //; 执行舒尔消元
 		// schur-complement!
 		MatXX bli = HMScaled.bottomLeftCorner(8, ndim).transpose() * hpi;
-		HMScaled.topLeftCorner(ndim, ndim).noalias() -= bli * HMScaled.bottomLeftCorner(8, ndim);
-		bMScaled.head(ndim).noalias() -= bli * bMScaled.tail<8>();
+		HMScaled.topLeftCorner(ndim, ndim).noalias() -= bli * HMScaled.bottomLeftCorner(8, ndim);  //; H左上角舒尔消元
+		bMScaled.head(ndim).noalias() -= bli * bMScaled.tail<8>();  //; b上面的部分舒尔消元
 
+        //; 把舒尔消元之后的结果再缩放回去
 		//unscale!
 		HMScaled = SVec.asDiagonal() * HMScaled * SVec.asDiagonal();
 		bMScaled = SVec.asDiagonal() * bMScaled;
 
+        //; H左上角再求平均，主要是为了让H仍然是一个对称矩阵？
+        //! 重要：这里HM和bM的维度就缩减了！变成了7帧关键帧的维度，而不是8帧关键帧的维度
 		// set.
 		HM = 0.5 * (HMScaled.topLeftCorner(ndim, ndim) + HMScaled.topLeftCorner(ndim, ndim).transpose());
 		bM = bMScaled.head(ndim);
 
-		//[ ***step 4*** ] 改变EFFrame的ID编号, 并删除
+		// Step 4 改变EFFrame的ID编号, 并删除
 		// remove from vector, without changing the order!
 		for (unsigned int i = fh->idx; i + 1 < frames.size(); i++)
 		{
@@ -855,52 +864,65 @@ namespace dso
 		delete fh;
 	}
 
+
 	//@ 边缘化掉一个点
+    /**
+     * @brief  对点进行边缘化
+     * 
+     */
 	void EnergyFunctional::marginalizePointsF()
 	{
 		assert(EFDeltaValid);
 		assert(EFAdjointsValid);
 		assert(EFIndicesValid);
 
-		//[ ***step 1*** ] 记录被边缘化的点
+		// Step 1 记录被边缘化的点
 		allPointsToMarg.clear();
 		for (EFFrame *f : frames)
 		{
 			for (int i = 0; i < (int)f->points.size(); i++)
 			{
+                // 遍历所有帧、帧上所有点，得到当前点
 				EFPoint *p = f->points[i];
+                //; 如果这个点是要被边缘话掉的, 则把这个点加入到数组中
 				if (p->stateFlag == EFPointStatus::PS_MARGINALIZE)
 				{
 					p->priorF *= setting_idepthFixPriorMargFac; //? 这是干啥 ???
 					for (EFResidual *r : p->residualsAll)
+                    {
 						if (r->isActive()) // 边缘化残差计数
+                        {
 							connectivityMap[(((uint64_t)r->host->frameID) << 32) + ((uint64_t)r->target->frameID)][1]++;
-					allPointsToMarg.push_back(p);
+                        }
+                    }
+                    allPointsToMarg.push_back(p);
 				}
 			}
 		}
 
-		//[ ***step 2*** ] 计算该点相连的残差构成的H, b, HSC, bSC
+		// Step 2 计算该点相连的残差构成的H, b, HSC, bSC
 		accSSE_bot->setZero(nFrames);
 		accSSE_top_A->setZero(nFrames);
 		for (EFPoint *p : allPointsToMarg)
 		{
+            //; 使用模式2，边缘化点的模式
 			accSSE_top_A->addPoint<2>(p, this); // 这个点的残差, 计算 H b
-			accSSE_bot->addPoint(p, false);		// 边缘化部分
+			accSSE_bot->addPoint(p, false);		// 舒尔补部分
 			removePoint(p);
 		}
 		MatXX M, Msc;
 		VecX Mb, Mbsc;
+        //; 把上面计算的一个个小的hessian中的结果，累加成大的68x68的hessian
 		accSSE_top_A->stitchDouble(M, Mb, this, false, false); // 不加先验, 在后面加了
 		accSSE_bot->stitchDouble(Msc, Mbsc, this);
 
 		resInM += accSSE_top_A->nres[0];
 
+        //; 正常计算的hessian - 舒尔补边缘化部分
 		MatXX H = M - Msc;
 		VecX b = Mb - Mbsc;
 
-		//[ ***step 3*** ] 处理零空间
-		// 减去零空间部分
+		// 处理零空间，减去零空间部分， 实际配置不执行这里
 		if (setting_solverMode & SOLVER_ORTHOGONALIZE_POINTMARG)
 		{
 			// have a look if prior is there.
@@ -913,10 +935,12 @@ namespace dso
 				orthogonalize(&b, &H);
 		}
 
+        // Step 3 HM/bM隆重出场！把每个点边缘化的H和b累加到HM和bM上
 		// 给边缘化的量加了个权重，不准确的线性化
 		HM += setting_margWeightFac * H; //* 所以边缘化的部分直接加在HM bM了
 		bM += setting_margWeightFac * b;
 
+        // 配置不执行这里
 		if (setting_solverMode & SOLVER_ORTHOGONALIZE_FULL)
         {
 			orthogonalize(&bM, &HM);
@@ -926,10 +950,14 @@ namespace dso
 		makeIDX(); // 梳理ID
 	}
 
+
 	//@ 直接丢掉点, 不边缘化
+    /**
+     * @brief 根据前端设置的外点标志位PS_DROP，把那些标记为外点的从能量函数中去掉
+     * 
+     */
 	void EnergyFunctional::dropPointsF()
 	{
-
 		for (EFFrame *f : frames)
 		{
 			for (int i = 0; i < (int)f->points.size(); i++)
@@ -937,8 +965,9 @@ namespace dso
 				EFPoint *p = f->points[i];
 				if (p->stateFlag == EFPointStatus::PS_DROP)
 				{
+                    //; 移除这个点，实际上就是把这个点构成的所有残差都删除掉
 					removePoint(p);
-					i--;
+					i--; 
 				}
 			}
 		}

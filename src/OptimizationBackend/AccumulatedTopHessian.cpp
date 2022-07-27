@@ -111,7 +111,7 @@ namespace dso
 				resApprox = rJ->resF;
             //; marginalize边缘化使用的res_toZeroF 在EFResidual::fixLinearizationF()赋值
 			if (mode == 2)  
-				resApprox = r->res_toZeroF;
+				resApprox = r->res_toZeroF;  //; 如果是边缘化的情况，那么需要它的能量是之前的能量
 
             //; linearized线性化的情况，涂金戈的博客(https://www.cnblogs.com/JingeTU/p/8586163.html)
             //; 中详细阐述了，实际上这个if是一定不会满足的，但是博客中他仍然给出了下面代码的解析
