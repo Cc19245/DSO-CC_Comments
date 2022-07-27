@@ -59,31 +59,31 @@ namespace dso
 	public:
 		EIGEN_MAKE_ALIGNED_OPERATOR_NEW;
 		// static values
-		float color[MAX_RES_PER_POINT];	  //!< 原图上pattern上对应的像素值
-		float weights[MAX_RES_PER_POINT]; //!< 原图上pattern对应的权重(与梯度成反比)
+		float color[MAX_RES_PER_POINT];	  //< 原图上pattern上对应的像素值
+		float weights[MAX_RES_PER_POINT]; //< 原图上pattern对应的权重(与梯度成反比)
 
-		Mat22f gradH; //!< 图像梯度hessian矩阵
+		Mat22f gradH; //< 图像梯度hessian矩阵
 		Vec2f gradH_ev;
 		Mat22f gradH_eig;
 		float energyTH;
-		float u, v; //!< host里的像素坐标
+		float u, v; //< host里的像素坐标
 		FrameHessian *host;
 		int idxInImmaturePoints;
 
-		float quality; //!< 第二误差/第一误差 作为搜索质量, 越大越好
+		float quality; //< 第二误差/第一误差 作为搜索质量, 越大越好
 
 		float my_type;
 
-		float idepth_min; //!< 逆深度范围
+		float idepth_min; //< 逆深度范围
 		float idepth_max;
 		ImmaturePoint(int u_, int v_, FrameHessian *host_, float type, CalibHessian *HCalib);
 		~ImmaturePoint();
 
 		ImmaturePointStatus traceOn(FrameHessian *frame, const Mat33f &hostToFrame_KRKi, const Vec3f &hostToFrame_Kt, const Vec2f &hostToFrame_affine, CalibHessian *HCalib, bool debugPrint = false);
 
-		ImmaturePointStatus lastTraceStatus; //!< 上一次跟踪状态
-		Vec2f lastTraceUV;					 //!< 上一次搜索得到的位置
-		float lastTracePixelInterval;		 //!< 上一次的搜索范围长度
+		ImmaturePointStatus lastTraceStatus; //< 上一次跟踪状态
+		Vec2f lastTraceUV;					 //< 上一次搜索得到的位置
+		float lastTracePixelInterval;		 //< 上一次的搜索范围长度
 
 		float idepth_GT;
 

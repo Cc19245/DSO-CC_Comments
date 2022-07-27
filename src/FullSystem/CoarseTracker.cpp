@@ -43,7 +43,7 @@
 namespace dso
 {
 
-	//! 生成2^b个字节对齐
+	//! 生成2^b个字节对齐，见深蓝学院PPT P23上面
 	template <int b, typename T>
 	T *allocAligned(int size, std::vector<T *> &rawPtrVec)
 	{

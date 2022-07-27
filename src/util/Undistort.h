@@ -91,19 +91,19 @@ namespace dso
 
 	protected:
 		//; 输出图像宽高、输入图像宽高、？？
-		int w, h, wOrg, hOrg, wUp, hUp; //!< 输入图像大小, 相机原像素大小,
+		int w, h, wOrg, hOrg, wUp, hUp; //< 输入图像大小, 相机原像素大小,
 
 		int upsampleUndistFactor;
 		//; 输出图像 和 有效归一化平面范围 之间的相机投影参数，很多资料中也把它称为新的内参
-		Mat33 K; //!< 矫正后的相机参数(也可能是更改了的标定输出)
+		Mat33 K; //< 矫正后的相机参数(也可能是更改了的标定输出)
 		//; 原来的相机参数，就是输入图像的投影参数，包含相机投影参数和畸变参数
-		VecX parsOrg; //!< 原来相机参数
+		VecX parsOrg; //< 原来相机参数
 
-		bool valid;		  //!< 参数有效
-		bool passthrough; //!< 通过??? 不知道这个是干嘛的
+		bool valid;		  //< 参数有效
+		bool passthrough; //< 通过??? 不知道这个是干嘛的
 
 		//; 输出图像和输入图像之间的坐标对应关系，类似一个map，键是输出图像的位置，值是这个像素对应在输入图像中的位置
-		float *remapX; //!< 矫正所用的remap, 无畸变与畸变的映射
+		float *remapX; //< 矫正所用的remap, 无畸变与畸变的映射
 		float *remapY;
 
 		void applyBlurNoise(float *img) const;

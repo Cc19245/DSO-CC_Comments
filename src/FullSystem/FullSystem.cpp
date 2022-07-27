@@ -62,13 +62,7 @@ namespace dso
 	int PointHessian::instanceCounter = 0;
 	int CalibHessian::instanceCounter = 0;
 
-	/********************************
- * @ function: 构造函数
- * 
- * @ param: 
- * 
- * @ note:
- *******************************/
+
 	FullSystem::FullSystem()
 	{
 		int retstat = 0;
@@ -885,14 +879,12 @@ namespace dso
 	}
 
 
-	/********************************
-	 * @ function:  整个DSO系统的入口函数
+	/**
+	 * @brief 整个DSO系统的入口函数
 	 * 
-	 * @ param: 	image   标定后的辐照度和曝光时间
-	 * @			id		图像对应数据集文件夹中的第几张图片	  
-	 * 
-	 * @ note: start from here
-	 *******************************/
+	 * @param[in] image   标定后的辐照度和曝光时间
+	 * @param[in] id      图像对应数据集文件夹中的第几张图片	  
+	 */
 	void FullSystem::addActiveFrame(ImageAndExposure *image, int id)
 	{
 		// Step 1 track线程锁
@@ -1064,6 +1056,7 @@ namespace dso
 		}
 	}
 
+
 	//@ 建图线程
 	void FullSystem::mappingLoop()
 	{
@@ -1133,6 +1126,7 @@ namespace dso
 		}
 		printf("MAPPING FINISHED!\n");
 	}
+
 
 	//@ 结束建图线程
 	void FullSystem::blockUntilMappingIsFinished()
@@ -1356,7 +1350,6 @@ namespace dso
 		删除多余点，限制计算量，为后端优化做准备；
 		初始化shell为下一次初始化做准备。  //CC: 感觉这个地方说的不对吧？
 		————————————————
-		版权声明：本文为CSDN博主「我的笔帽呢」的原创文章，遵循CC 4.0 BY-SA版权协议，转载请附上原文出处链接及本声明。
 		原文链接：https://blog.csdn.net/weixin_43424002/article/details/114629354
 	 * @param[in] newFrame  初始化成功的那一帧（注意整个系统的第1帧已经被保存下来了）
 	 */
@@ -1520,6 +1513,7 @@ namespace dso
 		}
 		//printf("MADE %d IMMATURE POINTS!\n", (int)newFrame->immaturePoints.size());
 	}
+
 
 	//* 计算frameHessian的预计算值, 和状态的delta值
 	//@ 设置关键帧之间的关系

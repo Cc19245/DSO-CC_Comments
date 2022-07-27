@@ -37,7 +37,7 @@ namespace dso
 		EIGEN_MAKE_ALIGNED_OPERATOR_NEW;
 		// ================== new structure: save independently =============.
         //; 以下变量的类型中出现NR，说明该变量是存储了每一个 pattern 点的信息
-		VecNRf resF; //!< 每个patch的8个残差
+		VecNRf resF; //< 每个patch的8个残差
 
 		// the two rows of d[x,y]/d[xi].
 		Vec6f Jpdxi[2]; // 2x6	//!< 点对位姿

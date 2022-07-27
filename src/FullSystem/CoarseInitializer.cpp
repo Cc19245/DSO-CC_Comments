@@ -75,6 +75,7 @@ namespace dso
 		delete[] JbBuffer_new;
 	}
 
+
 	/**
 	 * @brief 目的是优化两帧（ref frame 和 new frame）之间的相对状态和ref frame中所有点的逆深度
 	 *        注意下面所有的操作都是为了上面的这个目的！
@@ -333,6 +334,7 @@ namespace dso
 		// 然后在第一次出现位移够大后连续再优化它5帧 最终结果作为输出
 		return snapped && frameID > snappedAt + 5;
 	}
+
 
 	void CoarseInitializer::debugPlot(int lvl, std::vector<IOWrap::Output3DWrapper *> &wraps)
 	{
@@ -760,24 +762,9 @@ namespace dso
 	float CoarseInitializer::rescale()
 	{
 		float factor = 20 * thisToNext.translation().norm();
-		//	float factori = 1.0f/factor;
-		//	float factori2 = factori*factori;
-		//
-		//	for(int lvl=0;lvl<pyrLevelsUsed;lvl++)
-		//	{
-		//		int npts = numPoints[lvl];
-		//		Pnt* ptsl = points[lvl];
-		//		for(int i=0;i<npts;i++)
-		//		{
-		//			ptsl[i].iR *= factor;
-		//			ptsl[i].idepth_new *= factor;
-		//			ptsl[i].lastHessian *= factori2;
-		//		}
-		//	}
-		//	thisToNext.translation() *= factori;
-
 		return factor;
 	}
+
 
 	//* 计算旧的和新的逆深度与iR的差值, 返回旧的差, 新的差, 数目
 	/**
@@ -811,6 +798,7 @@ namespace dso
 		//; 返回上一次深度的期望方差、这一次的深度期望方差、总的点数
 		return Vec3f(couplingWeight * E.A1m[0], couplingWeight * E.A1m[1], E.num);
 	}
+
 
 	//* 使用最近点来更新每个点的iR, smooth的感觉
 	/**
@@ -866,6 +854,7 @@ namespace dso
 			}
 		}
 	}
+
 
 	//* 使用归一化积来更新高层逆深度值
 	/**
@@ -968,6 +957,7 @@ namespace dso
 		optReg(srcLvl - 1); // 当前层
 	}
 
+
 	//* 低层计算高层, 像素值和梯度
 	void CoarseInitializer::makeGradients(Eigen::Vector3f **data)
 	{
@@ -993,6 +983,7 @@ namespace dso
 			}
 		}
 	}
+
 
 	/**
 	 * @brief 设置第一帧
@@ -1100,6 +1091,7 @@ namespace dso
 			dGrads[i].setZero();  //; 这个变量好像没用到？
 	}
 
+
 	/**
 	 * @brief 重置点的energy, idepth_new参数
 	 * 
@@ -1138,6 +1130,7 @@ namespace dso
 		}
 	}
 
+
 	/**
 	 * @brief 求出状态增量后, 计算被边缘化掉的逆深度的更新量, 更新逆深度
 	 * 
@@ -1158,10 +1151,10 @@ namespace dso
 			// Step 1 计算这个点的逆深度增量值, 对角阵求逆，直接变成了n个标量方程的计算
 			// JbBuffer[i][8] 是  (Jρ).t * r21
 			// JbBuffer[i].head<8>().dot(inc)对应Hρx21*δx21
-			//! dd*r + (dp*dd)^T*delta_p
+			// dd*r + (dp*dd)^T*delta_p
 			float b = JbBuffer[i][8] + JbBuffer[i].head<8>().dot(inc);
-			//! dd * delta_d = dd*r - (dp*dd)^T*delta_p = b
-			//! delta_d = b * dd^-1
+			// dd * delta_d = dd*r - (dp*dd)^T*delta_p = b
+			// delta_d = b * dd^-1
 			// 这个是逆深度的增量值	  
 			//; 注意这个时候jbBuffer[i][9]已经就是V^-1了，所以这里直接*即可，不用/
 			float step = -b * JbBuffer[i][9] / (1 + lambda);
@@ -1188,6 +1181,7 @@ namespace dso
 		}
 	}
 
+
 	//* 新的值赋值给旧的 (能量, 点状态, 逆深度, hessian)
 	void CoarseInitializer::applyStep(int lvl)
 	{
@@ -1209,6 +1203,7 @@ namespace dso
 		}
 		std::swap<Vec10f *>(JbBuffer, JbBuffer_new);
 	}
+
 
 	//@ 计算每个金字塔层的相机参数
 	void CoarseInitializer::makeK(CalibHessian *HCalib)
@@ -1243,6 +1238,7 @@ namespace dso
 			cyi[level] = Ki[level](1, 2);
 		}
 	}
+
 
 	//@ 生成每一层点的KDTree, 并用其找到邻近点集和父点
 	/**

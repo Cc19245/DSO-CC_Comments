@@ -240,27 +240,27 @@ namespace dso
 		float statistics_lastFineTrackRMSE;
 
 		// =================== changed by tracker-thread. protected by trackMutex ============
-		boost::mutex trackMutex;				   //!< tracking线程锁
-		std::vector<FrameShell *> allFrameHistory; //!< 所有的历史帧
+		boost::mutex trackMutex;				   //< tracking线程锁
+		std::vector<FrameShell *> allFrameHistory; //< 所有的历史帧
 		CoarseInitializer *coarseInitializer;
-		Vec5 lastCoarseRMSE; //!< 上一次跟踪的平均chi2
+		Vec5 lastCoarseRMSE; //< 上一次跟踪的平均chi2
 
 		// ================== changed by mapper-thread. protected by mapMutex ===============
-		boost::mutex mapMutex; //!< Mapping 线程锁
+		boost::mutex mapMutex; //< Mapping 线程锁
 		std::vector<FrameShell *> allKeyFramesHistory;
 
-		EnergyFunctional *ef;				  //!< 能量方程
-		IndexThreadReduce<Vec10> treadReduce; //!< 多线程
+		EnergyFunctional *ef;				  //< 能量方程
+		IndexThreadReduce<Vec10> treadReduce; //< 多线程
 
 		float *selectionMap;
 		PixelSelector *pixelSelector;
 		CoarseDistanceMap *coarseDistanceMap;
 
-		std::vector<FrameHessian *> frameHessians;		   //!< 关键帧 // ONLY changed in marginalizeFrame and addFrame.
-		std::vector<PointFrameResidual *> activeResiduals; //!< 新加入的激活点的残差
-		float currentMinActDist;						   //!<　激活点的阈值
+		std::vector<FrameHessian *> frameHessians;		   //< 关键帧 // ONLY changed in marginalizeFrame and addFrame.
+		std::vector<PointFrameResidual *> activeResiduals; //< 新加入的激活点的残差
+		float currentMinActDist;						   //<　激活点的阈值
 
-		std::vector<float> allResVec; //!< 所有在当前最近帧上的残差值
+		std::vector<float> allResVec; //< 所有在当前最近帧上的残差值
 
 		// mutex etc. for tracker exchange.
 		boost::mutex coarseTrackerSwapMutex;   // if tracker sees that there is a new reference, tracker locks [coarseTrackerSwapMutex] and swaps the two.

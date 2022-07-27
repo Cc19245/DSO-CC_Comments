@@ -65,23 +65,23 @@ namespace dso
 
 		// structural pointers
 		PointFrameResidual *data;
-		int hostIDX, targetIDX; //!< 残差对应的 host 和 Target ID号
-		EFPoint *point;			//!< 残差点
-		EFFrame *host;			//!< 主
-		EFFrame *target;		//!< 目标
-		int idxInAll;			//!< 所有残差中的id
+		int hostIDX, targetIDX; //< 残差对应的 host 和 Target ID号
+		EFPoint *point;			//< 残差点
+		EFFrame *host;			//< 主
+		EFFrame *target;		//< 目标
+		int idxInAll;			//< 所有残差中的id
 
-		RawResidualJacobian *J; //!< 用来计算jacob, res值
+		RawResidualJacobian *J; //< 用来计算jacob, res值
 
-		VecNRf res_toZeroF; //!< 更新delta后的线性残差
-		Vec8f JpJdF;		//!< 逆深度Jaco和位姿+光度Jaco的Hessian
+		VecNRf res_toZeroF; //< 更新delta后的线性残差
+		Vec8f JpJdF;		//< 逆深度Jaco和位姿+光度Jaco的Hessian
 
 		// status.
-		bool isLinearized; //!< 计算完成res_toZeroF
+		bool isLinearized; //< 计算完成res_toZeroF
 
 		// if residual is not OOB & not OUTLIER & should be used during accumulations
-		bool isActiveAndIsGoodNEW;											 //!< 激活的还可以参与优化
-		inline const bool &isActive() const { return isActiveAndIsGoodNEW; } //!< 是不是激活的取决于残差状态
+		bool isActiveAndIsGoodNEW;	//< 激活的还可以参与优化
+		inline const bool &isActive() const { return isActiveAndIsGoodNEW; } //< 是不是激活的取决于残差状态
 	};
 
 	enum EFPointStatus
@@ -102,28 +102,28 @@ namespace dso
 		}
 		void takeData();
 
-		PointHessian *data; //!< PointHessian数据
+		PointHessian *data; //< PointHessian数据
 
-		float priorF; //!< 逆深度先验信息矩阵, 初始化之后的有
-		float deltaF; //!< 当前逆深度和线性化处的差, 没有使用FEJ, 就是0
+		float priorF; //< 逆深度先验信息矩阵, 初始化之后的有
+		float deltaF; //< 当前逆深度和线性化处的差, 没有使用FEJ, 就是0
 
 		// constant info (never changes in-between).
-		int idxInPoints; //!< 当前点在EFFrame中id
+		int idxInPoints; //< 当前点在EFFrame中id
 		EFFrame *host;
 
 		// contains all residuals.
-		std::vector<EFResidual *> residualsAll; //!< 该点的所有残差
+		std::vector<EFResidual *> residualsAll; //< 该点的所有残差
 
-		float bdSumF;	 //!< 当前残差 + 边缘化先验残差
-		float HdiF;		 //!< 逆深度hessian的逆, 协方差
-		float Hdd_accLF; //!< 边缘化, 逆深度的hessian
-		VecCf Hcd_accLF; //!< 边缘化, 逆深度和内参的hessian
-		float bd_accLF;	 //!< 边缘化, J逆深度*残差
-		float Hdd_accAF; //!< 正常逆深度的hessian
-		VecCf Hcd_accAF; //!< 正常逆深度和内参的hessian
-		float bd_accAF;	 //!< 正常 J逆深度*残差
+		float bdSumF;	 //< 当前残差 + 边缘化先验残差
+		float HdiF;		 //< 逆深度hessian的逆, 协方差
+		float Hdd_accLF; //< 边缘化, 逆深度的hessian
+		VecCf Hcd_accLF; //< 边缘化, 逆深度和内参的hessian
+		float bd_accLF;	 //< 边缘化, J逆深度*残差
+		float Hdd_accAF; //< 正常逆深度的hessian
+		VecCf Hcd_accAF; //< 正常逆深度和内参的hessian
+		float bd_accAF;	 //< 正常 J逆深度*残差
 
-		EFPointStatus stateFlag; //!< 点的状态
+		EFPointStatus stateFlag; //< 点的状态
 	};
 
 	class EFFrame
@@ -137,16 +137,16 @@ namespace dso
 		void takeData();
 
 		//! 位姿 0-5, 光度ab 6-7
-		Vec8 prior;		  //!< 位姿只有第一帧有先验 prior hessian (diagonal)
-		Vec8 delta_prior; //!< 相对于先验的增量   // = state-state_prior (E_prior = (delta_prior)' * diag(prior) * (delta_prior)
-		Vec8 delta;		  //!< 相对于线性化点位姿, 光度的增量  // state - state_zero.
+		Vec8 prior;		  //< 位姿只有第一帧有先验 prior hessian (diagonal)
+		Vec8 delta_prior; //< 相对于先验的增量   // = state-state_prior (E_prior = (delta_prior)' * diag(prior) * (delta_prior)
+		Vec8 delta;		  //< 相对于线性化点位姿, 光度的增量  // state - state_zero.
 
-		std::vector<EFPoint *> points; //!< 帧上所有点
-		FrameHessian *data;			   //!< 对应FrameHessian数据
+		std::vector<EFPoint *> points; //< 帧上所有点
+		FrameHessian *data;			   //< 对应FrameHessian数据
 		//? 和FrameHessian中的idx有啥不同
-		int idx; //!< 在能量函数中帧id // idx in frames.
+		int idx; //< 在能量函数中帧id // idx in frames.
 
-		int frameID; //!< 所有历史帧ID
+		int frameID; //< 所有历史帧ID
 	};
 
 }
