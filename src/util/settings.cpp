@@ -87,6 +87,11 @@ namespace dso
 	// 2 = apply inv. response & remove V.
 	int setting_photometricCalibration = 2;
 	bool setting_useExposure = true;
+
+    //; 看右边作者的解释：下面的值分三个分支：
+    //; -1: 固定光度参数不优化
+    //;  0: 优化光度参数，并且没有先验
+    //;  1: 优化光度参数，有先验
 	float setting_affineOptModeA = 1e12; //-1: fix. >=0: optimize (with prior, if > 0).
 	float setting_affineOptModeB = 1e8;	 //-1: fix. >=0: optimize (with prior, if > 0).
 

@@ -90,7 +90,7 @@ namespace dso
 		//@ 获得最终的 H 和 b
         /**
          * @brief 把上一步构造的所有的8*8的小的hessian累加起来，构造成最后整个大的hessian
-         * 
+         *        此外还要注意在这个累加过程中会把相对状态的小hessian转化成绝对状态的大hessian
          * @param[in] red 
          * @param[in] H 
          * @param[in] b 
@@ -111,7 +111,7 @@ namespace dso
 					assert(nframes[0] == nframes[i]);
 					//* 所有的优化变量维度
 					Hs[i] = MatXX::Zero(nframes[0] * 8 + CPARS, nframes[0] * 8 + CPARS);
-					bs[i] = VecX::Zero(nframes[0] * 8 + CPARS);
+					bs[i] = VecX::Zero(nframes[0] * 8 + CPARS);  
 				}
 
 				red->reduce(boost::bind(&AccumulatedTopHessianSSE::stitchDoubleInternal,

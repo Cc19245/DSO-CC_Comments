@@ -74,9 +74,9 @@ namespace dso
 
 				if (r->efResidual->isActive()) // 残差是in的
 				{
+                    //TODO 好像只有在构造函数里面赋值了isNew=true，其他地方都没有赋值，这里可以assert看一下
 					if (r->isNew)
 					{
-						//TODO 理解无穷远点
 						PointHessian *p = r->point;
 						Vec3f ptp_inf = r->host->targetPrecalc[r->target->idx].PRE_KRKiTll * Vec3f(p->u, p->v, 1); // projected point assuming infinite depth.
 						Vec3f ptp = ptp_inf + r->host->targetPrecalc[r->target->idx].PRE_KtTll * p->idepth_scaled; // projected point with real depth.
@@ -166,7 +166,8 @@ namespace dso
 	Vec3 FullSystem::linearizeAll(bool fixLinearization)
 	{
 		double lastEnergyP = 0;
-		double lastEnergyR = 0;
+        //; 下面这俩变量都没用到，哎，不知道为啥这么搞
+		double lastEnergyR = 0;  
 		double num = 0;
 
 		std::vector<PointFrameResidual *> toRemove[NUM_THREADS];
@@ -190,6 +191,7 @@ namespace dso
 		}
 
         //; 计算当前最新帧的能量阈值？ 玄学，啥玩意
+        //TODO：看看这个函数里面的操作对后面是否有影响
 		setNewFrameEnergyTH();
 
 		if (fixLinearization)
@@ -452,7 +454,6 @@ namespace dso
      */
 	float FullSystem::optimize(int mnumOptIts)
 	{
-
 		if (frameHessians.size() < 2)
 			return 0;
         //; 这里如果滑窗中关键帧个数过少的话，那么不关外部设置优化多少次，这里都多优化几次
@@ -466,7 +467,7 @@ namespace dso
         //; 可以认为activeResiduals是新的残差边，是没有经过边缘化的，所以没有线性化点
 		activeResiduals.clear();
 		int numPoints = 0;   // 没用
-		int numLRes = 0;     // 没用
+		int numLRes = 0;  
         // 遍历所有关键帧
 		for (FrameHessian *fh : frameHessians)
         {
@@ -480,10 +481,13 @@ namespace dso
                     //! 重要：这里的if一直满足
                     // 公益群讲的这里是一直满足的。因为线性化isLinearized这个操作是每次滑窗优化之后进行边缘化的时候进行的，
                     // 而被margin掉的点就是直接抛弃掉了，它的残差肯定也没了，所以剩下的这些残差一定都不是isLinearized的
+                    //! 7.27增：
+                    //; 1.首先滑窗中老帧和最新的关键帧构造的残差，在构造函数里就设置了不是线性化的，所以这里一定满足
+                    //TODO：2.看边缘化掉的点是否直接被丢掉了？也就是上面公益群说的
 					if (!r->efResidual->isLinearized) // 没有求线性误差
 					{
 						activeResiduals.push_back(r); // 新加入的残差
-						r->resetOOB();				  // residual状态重置
+						r->resetOOB();	 // residual状态重置
 					}
 					else
                     {
@@ -491,7 +495,7 @@ namespace dso
                         numLRes++; //已经线性化过得计数
                     }
 				}
-				numPoints++;
+				// numPoints++;  // CC: 没用注释掉
 			}
         }
 
@@ -502,6 +506,7 @@ namespace dso
 		
 		// Step 2 线性化activeResiduals的残差, 计算边缘化的能量值 (然而这里都设成0了)
         //; 这里所说的线性化实际上就是求残差对状态变量的雅克比，而并不是边缘化等操作
+        //! 重要：看下面的注释，从某篇博客中摘出来的
         //    当前新关键帧的线性化点认为是track时候的位姿，就是第1步的位姿;
         //    其他关键帧的位姿就是FEJ的线性化点的位姿，都为worldToCam_evalPT
 		//* 线性化, 参数: [true是进行固定线性化, 并去掉不好的残差] [false不进行固定线性化]
@@ -527,7 +532,7 @@ namespace dso
             // 最后会在solveSystem函数里用到这些中间变量，其实所谓中间变量就是雅克比矩阵的一些组成元素。
             //; 注意上面linearizeAll函数内部计算了残差的雅克比，但是由于传入的实参是false，因此内部并没有
             //; 调用applyRes把计算的雅克比传给后端优化，所以这里就调用applyRes_Reductor(内部调用applyRes)
-            //; 把这些残差都传递给后端优化的对象
+            //; 把这些残差都传递给后端优化的对象。注意这里就是把残差传给后端，并没有重新线性化一次浪费时间
             //! 疑问：上面传入false的原因是什么？
             applyRes_Reductor(true, 0, activeResiduals.size(), 0, 0);
         }   
@@ -720,7 +725,7 @@ namespace dso
 	{
 		if (setting_forceAceptStep)
 			return 0;
-        //; 求先验的能量
+        //; 求先验的能量，注意这里是调用了后端来求的能量
 		double Ef = ef->calcLEnergyF_MT();
 		return Ef;
 	}

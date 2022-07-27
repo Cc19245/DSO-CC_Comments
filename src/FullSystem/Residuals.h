@@ -81,6 +81,7 @@ namespace dso
 		FrameHessian *target;	//< 目标帧
 		RawResidualJacobian *J; //< 残差对变量的各种雅克比
 
+        //; 这是啥？构造函数里会设置成true。靠，我也没发现别的地方还赋值了啊，只有构造函数了设置成了true
 		bool isNew;
 
 		Eigen::Vector2f projectedTo[MAX_RES_PER_POINT]; //< 各个patch的投影坐标
@@ -91,13 +92,17 @@ namespace dso
 		PointFrameResidual(PointHessian *point_, FrameHessian *host_, FrameHessian *target_);
 		double linearize(CalibHessian *HCalib);
 
+        /**
+         * @brief 复位点的状态
+         * 
+         */
 		void resetOOB()
 		{
-			state_NewEnergy = state_energy = 0;
-			state_NewState = ResState::OUTLIER;
-
-			setState(ResState::IN);
+			state_NewEnergy = state_energy = 0;  //; 上次能量和最新能量都赋值0
+			state_NewState = ResState::OUTLIER;  //; 最新状态设置为外点
+			setState(ResState::IN);   //; 上次的状态设置成内点
 		};
+
 		void applyRes(bool copyJacobians);
 
 		void debugPlot();

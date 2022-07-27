@@ -67,9 +67,11 @@ namespace dso
 	PointFrameResidual::PointFrameResidual(PointHessian *point_, FrameHessian *host_, FrameHessian *target_) : 
         point(point_), host(host_), target(target_)
 	{
-		efResidual = 0;
-		instanceCounter++;
+        //; 这个残差对应的后端能量残差指针先赋值空指针，因为后端的能量残差还没有构造呢
+		efResidual = 0;  // 写法真的狂野，写NULL或者nullptr不好吗？
+		instanceCounter++; 
 		resetOOB();
+        //; 雅克比结构体对象，先构造，里面还啥都没有
 		J = new RawResidualJacobian(); // 各种雅克比
 		assert(((long)J) % 16 == 0);   // 16位对齐
 
@@ -90,6 +92,7 @@ namespace dso
 	{
 		state_NewEnergyWithOutlier = -1;
 
+        //; 上一次的状态如果是出界，则直接返回
 		if (state_state == ResState::OOB)
 		{
 			state_NewState = ResState::OOB;
@@ -97,7 +100,8 @@ namespace dso
 		}
 
         //; 构成这个残差的两个帧之间相对量的一些与计算参数，就是在刚开始的时候调用setPrecalcValues函数里设置的
-		FrameFramePrecalc *precalc = &(host->targetPrecalc[target->idx]); // 得到这个目标帧在主帧上的一些预计算参数
+        //; 这个残差所属于的点的host的帧，在之前调用setPrecalcValues时计算的线性化点、最新状态的相对量
+        FrameFramePrecalc *precalc = &(host->targetPrecalc[target->idx]); // 得到这个目标帧在主帧上的一些预计算参数
 		float energyLeft = 0;											 
 		const Eigen::Vector3f *dIl = target->dI;
 		const Mat33f &PRE_KRKiTll = precalc->PRE_KRKiTll;
@@ -127,7 +131,7 @@ namespace dso
 			if (!projectPoint(point->u, point->v, point->idepth_zero_scaled, 0, 0, HCalib,
 							  PRE_RTll_0, PRE_tTll_0, drescale, u, v, Ku, Kv, KliP, new_idepth))
 			{
-				state_NewState = ResState::OOB;
+				state_NewState = ResState::OOB;  //; 标志这个残差的最新状态是出界，直接返回
 				return state_energy;
 			} // 投影不在图像里, 则返回OOB
 

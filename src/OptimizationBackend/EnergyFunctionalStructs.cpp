@@ -72,21 +72,29 @@ namespace dso
 
 
 	//@ 从 FrameHessian 中提取数据
+    /**
+     * @brief 从前端帧中提取数据，存储到类成员变量中。
+     *   注意：此函数是在构造函数中被调用
+     * 
+     */
 	void EFFrame::takeData()
 	{
-        // 得到先验状态, 主要是光度仿射变换
+        // 1.得到这一帧的先验hessian, 主要是光度仿射变换的hessian
 		prior = data->getPrior().head<8>();	  
 
-        // 状态与FEJ零状态之间差
+        // 2.状态 与 FEJ线性化点 之差, state - state_zero
 		delta = data->get_state_minus_stateZero().head<8>();	
 
-        // 状态与先验之间的差 //? 可先验是0啊?
+        // 3.状态 与 先验在线性化点 之差, state - 0
+        //! 疑问：这里不太明白
 		delta_prior = (data->get_state() - data->getPriorZero()).head<8>(); 
 
 		assert(data->frameID != -1);
 
+        //; 拷贝这个能量帧在历史所有关键帧中的序号
 		frameID = data->frameID; // 所有帧的ID序号
 	}
+
 
 	//@ 从PointHessian读取先验和当前状态信息
 	void EFPoint::takeData()

@@ -1165,7 +1165,7 @@ namespace dso
 
 
 	/**
-	 * @brief 传入一个FrameHessian，由它生成关键帧
+	 * @brief 传入一个FrameHessian，由它生成关键帧，也是整个后端的核心入口函数，内部的操作非常多
      *   //@ 生成关键帧, 优化, 激活点, 提取点, 边缘化关键帧
 	 * @param[in] fh 
 	 */
@@ -1200,36 +1200,46 @@ namespace dso
 		allKeyFramesHistory.push_back(fh->shell);
 		ef->insertFrame(fh, &Hcalib);   //; 这里注意，还要把当前关键帧插入到能量函数中
 
-        //; 优化之前保存FEJ的线性化点、计算大的先验和当前状态之间的差值、状态相对线性化点的增量值
+        //; 两个操作：
+        //; 1.相对状态量计算：计算帧帧之间的FEJ线性化点的相对量，以及帧帧之间当前最新状态的相对量，
+        //;   因为后面求正规方程要用相对量
+        //; 2.状态增量计算：
+        //;   (1)相对状态增量：当前帧帧之间相对状态 与 FEJ线性化点帧帧之间相对状态的增量；
+        //;   (2)绝对状态增量：a.当前相机内参 与 相机内参先验(也可以认为是FEJ线性化点)的增量
+        //;                   b.当前每帧绝对状态 与 FEJ线性化点绝对状态的增量
+        //;                   c.当前每帧绝对状态 与 先验状态(实际都给了0)的增量
 		setPrecalcValues(); // 每添加一个关键帧都会运行这个来设置位姿, 设置位姿线性化点
 
 
 		// Step 4 遍历窗口中之前所有帧的成熟点pointHessians，构建它们和新的关键帧的点帧误差PointFrameResidual，加入到ef中；
 		// =========================== add new residuals for old points =========================
-		int numFwdResAdde = 0;
+		// int numFwdResAdde = 0;   // CC: 无用参数
 		for (FrameHessian *fh1 : frameHessians) // go through all active frames
 		{
 			// 当前帧和当前帧肯定不能构成残差
             if (fh1 == fh)
 				continue;
-            //; 遍历之前帧所持有的所有成熟点
+            //; 遍历之前帧所持有的所有成熟点，和最新的关键帧构成残差
 			for (PointHessian *ph : fh1->pointHessians) // 全都构造之后再删除
 			{
                 //; 之前的帧上面的点都可以和当前帧建立残差(实际不可能，但是这里就先全部加上，后面再排除)
 				PointFrameResidual *r = new PointFrameResidual(ph, fh1, fh); // 新建当前帧fh和之前帧之间的残差
-				r->setState(ResState::IN);  //; 加上的残差一开始都认为是内点，后面再排除
+				//TODO 这里是多余的，在构造函数里调用resetOOB，就把状态设置成IN了
+                r->setState(ResState::IN);  //; 加上的残差一开始都认为是内点，后面再排除
 				
                 //! 重点：点的残差就是在这里被加入的。这样就可以保证，随着关键帧逐渐插入，之前插入的关键帧之间
                 //! 已经构成了残差，所以本次插入新的关键帧之后，只需要增加前面所有帧和当前帧的残差即可
                 ph->residuals.push_back(r);
 
-                //; 将构建的残差插入到能量方程中, 会把前端的这个残差给到后端能量点上
+                //; 将构建的残差插入到能量方程中, 会把前端的这个残差给到后端能量残差上
                 ef->insertResidual(r);   
 
+                //; 备份最新的残差，在其他地方好像也用到了，不知道干嘛的
+                //TODO 还要细看这里备份的最新的残差信息有什么用
 				ph->lastResiduals[1] = ph->lastResiduals[0];	// 设置上上个残差
                 // 当前的设置为上一个
 				ph->lastResiduals[0] = std::pair<PointFrameResidual *, ResState>(r, ResState::IN); 
-				numFwdResAdde += 1;
+				// numFwdResAdde += 1;  // CC: 无用参数
 			}
 		}
 
@@ -1520,16 +1530,22 @@ namespace dso
     /**
      * @brief 这个预计算值应该就是线性化点的值？
      * 解答：是的，这里就是在计算由于FEJ需要保留的固定的线性化点的值
-     * 7.26增：1.备份优化前的状态值作为线性化点
-     *        2.计算当前状态相对线性化点状态的增量、相对大的先验状态的增量
+     // !7.26增：1.备份优化前的状态值作为线性化点
+     *           2.计算当前状态相对线性化点状态的增量、相对大的先验状态的增量
+     // !7.27增：两个操作：
+        //; 1.相对状态量计算：计算帧帧之间的FEJ线性化点的相对量，以及帧帧之间当前最新状态的相对量，
+        //;   因为后面求正规方程要用相对量
+        //; 2.状态增量计算：
+        //;   (1)相对状态增量：当前帧帧之间相对状态 与 FEJ线性化点帧帧之间相对状态的增量；
+        //;   (2)绝对状态增量：a.当前相机内参 与 相机内参先验(也可以认为是FEJ线性化点)的增量
+        //;                   b.当前每帧绝对状态 与 FEJ线性化点绝对状态的增量
+        //;                   c.当前每帧绝对状态 与 先验状态(实际都给了0)的增量
      */
 	void FullSystem::setPrecalcValues()
 	{
         // Step 1 备份优化前的状态值作为线性化点，计算优化后的状态的增量
 		for (FrameHessian *fh : frameHessians)
 		{
-			//! 疑问：啥叫预计算值？
-            //! 解答：应该就是在计算优化之前的线性化点的状态值，为FEJ做准备
 			fh->targetPrecalc.resize(frameHessians.size());	  // 每个目标帧预运算容器, 大小是关键帧数
 
 			for (unsigned int i = 0; i < frameHessians.size(); i++)		 //? 还有自己和自己的???
@@ -1542,7 +1558,7 @@ namespace dso
 		// 因为在trackFrame中优化的状态是六自由度姿态​和光度仿射变换参数的相对关系，这里利用伴随矩阵计算绝对位姿和光度变换参数的变化
 		// 建立相关量的微小扰动，包括：adHTdeltaF[idx]，f->delta，f->delta_prior。
         // Step 2 计算当前状态相对线性化点状态的增量、相机内参等大的先验的增量
-		ef->setDeltaF(&Hcalib);
+		ef->setDeltaF(&Hcalib);  //; 后端大boss计算最新状态相对线性化点、先验点的增量
 	}
 
 

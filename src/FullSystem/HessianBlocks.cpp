@@ -229,7 +229,9 @@ namespace dso
     /**
      * @brief 这个代码对应深蓝PPT中的P38，由于使用了FEJ，所以这里就是在保存不同的状态，包括固定的线性化点处的相对位姿，
      *    优化更新状态后的相对位姿等(每次优化更新之后都会调用(调用这个函数的)函数，从而重新计算更新后的相对位姿)
-     * 
+     //! 7.27增：
+        //; 相对状态量计算：计算帧帧之间的FEJ线性化点的相对量，以及帧帧之间当前最新状态的相对量，
+        //;   因为后面求正规方程要用相对量
      * @param[in] host 
      * @param[in] target 
      * @param[in] HCalib 
@@ -242,12 +244,13 @@ namespace dso
 		// 实在不懂leftToleft_0这个名字怎么个含义
         // Step 1 线性化点的值
 		// 优化前host target间位姿变换
+        //TODO 这里最新帧的get_worldToCam_evalPT是在哪设置的？找了很久也没有找到
         //; get_worldToCam_evalPT是这一帧正在估计的相机位姿？那么这个在优化之前调用，也就是优化之前的相对位姿？
 		SE3 leftToLeft_0 = target->get_worldToCam_evalPT() * host->get_worldToCam_evalPT().inverse();
 		PRE_RTll_0 = (leftToLeft_0.rotationMatrix()).cast<float>();  //; PRE是Precalc的前缀pre, 表示预计算
 		PRE_tTll_0 = (leftToLeft_0.translation()).cast<float>();
 
-        // Step 2 优化后的值
+        // Step 2 优化后的值，也就是最新的位姿
 		// 优化后host到target间位姿变换
         //! 疑问：这里为什么用的是预计算的值来求优化后的位姿变换？
 		SE3 leftToLeft = target->PRE_worldToCam * host->PRE_camToWorld;
@@ -257,6 +260,8 @@ namespace dso
 
         // Step 3 优化后内参的一些变化量
 		// 乘上内参, 中间量?
+        //; 这里没有调用makeK，那么是最新的内参吗？
+        //; CC解答：应该是的
 		Mat33f K = Mat33f::Zero();
 		K(0, 0) = HCalib->fxl();
 		K(1, 1) = HCalib->fyl();

@@ -95,14 +95,14 @@ namespace dso
 				//; 这里就先简单的认为把两帧的绝对光度系数转成了两帧之间的相对广度系数，然后由于能量函数中是利用两帧的
 				//; 相对光度参数求残差，所以这里还要利用相对光度参数和绝对光度参数之间的关系，转化成能量函数对绝对光度参数的导数
 				//; 这里就是在计算相对相对光度对绝对光度的雅克比，然后后面利用链式法则得到能量函数对绝对光度参数的雅克比
-				//! E = Ij - tj*exp(aj) / ti*exp(ai) * Ii - (bj - tj*exp(aj) / ti*exp(ai) * bi)
-				//! a = - tj*exp(aj) / ti*exp(ai),  b = - (bj - tj*exp(aj) / ti*exp(ai) * bi)
+				// E = Ij - tj*exp(aj) / ti*exp(ai) * Ii - (bj - tj*exp(aj) / ti*exp(ai) * bi)
+				// a = - tj*exp(aj) / ti*exp(ai),  b = - (bj - tj*exp(aj) / ti*exp(ai) * bi)
 				Vec2f affLL = AffLight::fromToVecExposure(host->ab_exposure,
 					target->ab_exposure, host->aff_g2l_0(), target->aff_g2l_0()).cast<float>();
-				AT(6, 6) = -affLL[0]; //! a'(aj)
-				AH(6, 6) = affLL[0];  //! a'(ai)
-				AT(7, 7) = -1;		  //! b'(bj)
-				AH(7, 7) = affLL[0];  //! b'(bi)
+				AT(6, 6) = -affLL[0]; // a'(aj)
+				AH(6, 6) = affLL[0];  // a'(ai)
+				AT(7, 7) = -1;		  // b'(bj)
+				AH(7, 7) = affLL[0];  // b'(bi)
 
 				//; 再对 相对状态 对 绝对状态 的雅克比进行一个数值的缩放，应该也是为了数值稳定性？
 				//! 疑问1: 为什么是按照行来赋值，比如说平移部分应该是左上角3*3, 但是为什么缩放是作用到3*8上而不是3*3上？
@@ -137,6 +137,7 @@ namespace dso
 		adTargetF = new Mat88f[nFrames * nFrames];
 
 		//; 这里又把上面求得局部变量赋值给类的成员变量（为啥上面算的时候不直接赋值给类的成员变量？）
+        //! CC解答：其实内部存了两个同样的adHost和adTarget，只不过一个是double类型，一个是float类型，这里就是把double赋值给float
 		for (int h = 0; h < nFrames; h++)
 		{
 			for (int t = 0; t < nFrames; t++)
@@ -145,7 +146,8 @@ namespace dso
 				adTargetF[h + t * nFrames] = adTarget[h + t * nFrames].cast<float>();
 			}
 		}
-		cPriorF = cPrior.cast<float>();  //; 又把相机内参赋值给列的成员变量
+        //; 同理这里也是把double类型赋值给float类型
+		cPriorF = cPrior.cast<float>(); 
 
 		EFAdjointsValid = true;
 	}
@@ -216,6 +218,12 @@ namespace dso
 	 *   参见深蓝学院PPT P40
      * 7.26增：1.相机状态相对线性化点状态的 线性化增量
      *        2.相机内参、光度、逆深度的   先验增量
+     //! 7.27增：
+        //; 状态增量计算：
+        //;   (1)相对状态增量：当前帧帧之间相对状态 与 FEJ线性化点帧帧之间相对状态的增量；
+        //;   (2)绝对状态增量：a.当前相机内参 与 相机内参先验(也可以认为是FEJ线性化点)的增量
+        //;                   b.当前每帧绝对状态 与 FEJ线性化点绝对状态的增量
+        //;                   c.当前每帧绝对状态 与 先验状态(实际都给了0)的增量
 	 * @param[in] HCalib 
 	 */
 	void EnergyFunctional::setDeltaF(CalibHessian *HCalib)
@@ -225,7 +233,11 @@ namespace dso
 		//; Mat18f是1行8列的行向量
 		adHTdeltaF = new Mat18f[nFrames * nFrames];
 
-        // Step 1 相机状态的线性化增量：把相机当前相对状态 和 线性化点相对状态之间的差值，转到相机绝对状态上
+        // Step 1 相机绝对状态的线性化增量：把相机当前相对状态 和 线性化点相对状态之间的差值，转到相机绝对状态上
+        //! 7.27增：不是这样，这里应该是在算 两帧之间相对位姿的增量。因为两帧之间的绝对位姿增量都知道了，
+        //;      但是由于后面构造hessain都是对相对位姿求导，所以这里要计算两帧之间的相对位姿的增量。但是
+        //;      不能简单的用host - target或者target - host，而是应该使用伴随性质，把绝对位姿增量利用伴随
+        //;      矩阵变换到相对位姿增量上
 		for (int h = 0; h < nFrames; h++)
 		{
 			for (int t = 0; t < nFrames; t++)
@@ -233,10 +245,8 @@ namespace dso
 				int idx = h + t * nFrames;
 				// delta_th = Adj * delta_t or delta_th = Adj * delta_h
 				// 加一起应该是, 两帧之间位姿变换的增量, 因为h变一点, t变一点
-				//; 这个地方好像是利用两帧之间的相对状态的增量 * 相对状态对绝对状态的雅克比 = 绝对状态的增量，
-				//; 然后把两个相对帧的 绝对状态的增量加在一起？
 				adHTdeltaF[idx] = 
-                    //; get_state_minus_stateZero得到的应该是当前状态和线性化点的状态之间的增量
+                    //; get_state_minus_stateZero得到的应该是当前状态和线性化点的 绝对状态之间的增量
 					frames[h]->data->get_state_minus_stateZero().head<8>().cast<float>().transpose() * 
 					adHostF[idx]   //; adHostF是伴随矩阵，即相对状态 对 host帧的雅克比
 					+ 
@@ -245,19 +255,21 @@ namespace dso
 			}
 		}
 
-        // Step 2 相机内参的先验增量：注意这个应该是当前状态和先验状态之间的增量，而不是涉及线性化点
+        // Step 2 相机内参的先验增量：是 当前状态和 先验状态(内参只有一个，也可以认为是线性化点状态)的差值
 		cDeltaF = HCalib->value_minus_value_zero.cast<float>(); // 相机内参增量
 
 		// Step 3 相机光度先验增量、逆深度先验增量
 		for (EFFrame *f : frames)
 		{
-			f->delta = f->data->get_state_minus_stateZero().head<8>();	// 帧位姿增量
-            //; 位姿光度的先验增量
-			f->delta_prior = (f->data->get_state() - f->data->getPriorZero()).head<8>(); // 先验增量
+            //; 注意这里是利用前端的hessian来计算的，因为后端的EFFrame中并没有维护当前状态、线性化点状态
+            //;  等变量，因为后端只负责后端优化的求解，计算的时候直接从前端帧中拿即可，存储这些状态没有必要
+			f->delta = f->data->get_state_minus_stateZero().head<8>();	// 帧位姿增量 + 光度增量
+            f->delta_prior = (f->data->get_state() - f->data->getPriorZero()).head<8>(); // 先验增量，其实结果就是当前状态
 
 			for (EFPoint *p : f->points)
 			{
-                //; 逆深度的先验增量
+                //; 逆深度的线性化点增量，但是从后面优化来看，这里应该一直是0？
+                //TODO 验证此处的你深度增量是否一直为0
 				p->deltaF = p->data->idepth - p->data->idepth_zero; // 逆深度的增量
 			}
 		}
@@ -301,13 +313,13 @@ namespace dso
                 //; 遍历帧上的所有点
                 for (EFPoint *p : f->points)
                 {
-                    // Step 1 遍历所有点构成的残差，计算这些残差构成的hessian矩阵，累加到8*8的数组的对应位置的hessian中
+                    // Step 1 遍历点构成的所有残差，计算这些残差构成的hessian矩阵，累加到8*8的数组的对应位置的hessian中
                     accSSE_top_A->addPoint<0>(p, this); // mode 0 增加EF点
                 }
             }
 				
 			// accSSE_top_A->stitchDoubleMT(red,H,b,this,false,false); // 不加先验, 得到H, b
-            // Step 2 把上面计算的8*8个小的hessian，组合成大的hessian
+            // Step 2 把上面计算的8*8个小的hessian，组合成大的hessian，然后把相对状态的hessian转成对绝对状态的hessian
 			accSSE_top_A->stitchDoubleMT(red, H, b, this, true, false); // 加先验, 得到H, b
 			resInA = accSSE_top_A->nres[0];								// 所有残差计数
 		}
@@ -515,10 +527,16 @@ namespace dso
 
 		VecX delta = getStitchedDeltaF();
 
-        //; 下面这个能量结果这篇博客中有：https://blog.csdn.net/wubaobao1993/article/details/104343866
-        //; 不过这里其实和深蓝PPT中的P38 右下角是一样的，本质上就是再算上一次边缘化的结果对这次产生的能量
-		return delta.dot(2 * bM + HM * delta);  
-	}
+        //;  1.下面这个能量结果这篇博客中有：https://blog.csdn.net/wubaobao1993/article/details/104343866
+        //;    不过这里其实和深蓝PPT中的P38 右下角是一样的，本质上就是再算上一次边缘化的结果对这次产生的能量
+		//! 7.27增：
+        //;  2.这里为什么这么算其实在前面calcLEnergyPt函数中计算先验能量那部分的时候有，是因为E=|r|^2, 
+        //;    上次margin边缘化对本次的r产生的影响为 r = bM + HM*delta, 因此E = bM^2 + 
+        //!    疑问：这里好像还是不太对，不知道怎么算 
+        //     E = (f(x0)+J*dx)^2 = dx*H*dx + 2*J*dx*f(x0) + f(x0)^2  
+        //     (x-x_prior)^T * ∑ * (x-x_prior)
+        return delta.dot(2 * bM + HM * delta);   
+	} 
 
 
 	//@ 计算所有点的能量E之和, delta是相对的
@@ -607,14 +625,21 @@ namespace dso
 		double E = 0;
 		// 先验的能量 (x-x_prior)^T * ∑ * (x-x_prior)
 		//* 因为 f->prior 是hessian的对角线, 使用向量表示, 所以使用cwiseProduct进行逐个相乘
-        //; 1.遍历所有的能量帧，计算位姿先验(只有第一帧有)能量+相机内参能量
+        // Step 1 遍历所有的能量帧，计算位姿先验(只有第一帧有)能量+光度能量
 		for (EFFrame *f : frames)
         {
-            E += f->delta_prior.cwiseProduct(f->prior).dot(f->delta_prior); // 位姿先验
+            //; 1.(1)prior 就是位姿、光度的先验hessian，一般情况位姿hessian都是0，光度hessian值很大;
+            //;   (2)delta_prior 前6维是当前位姿 相对 先验位姿(直接给了0)的增量，后2维是当前光度
+            //;      相对先验光度(直接给了0)的增量。
+            //; 2.从上可以看到，由于大部分情况下位姿部分hessian是0，所以能量也是0。而光度部分hessian很大，
+            //;    所以这部分能量可能很大，那么最后会不会导致优化的光度非常接近0？
+            //TODO 这里打印看一下delta_prior的光度部分是不是很小，因为hessian太大，delta_prior不小的话能量会很大
+            E += f->delta_prior.cwiseProduct(f->prior).dot(f->delta_prior); 
         }	
 		E += cDeltaF.cwiseProduct(cPriorF).dot(cDeltaF); // 相机内参先验
 
-        //; 2.多线程计算逆深度的先验(只有第一帧上的点有)能量
+        // Step 2 多线程计算逆深度的先验(只有第一帧上的点有)能量
+        //; 靠，这个地方也不管你到底设置没设置多线程，直接就用多线程算？
 		red->reduce(boost::bind(&EnergyFunctional::calcLEnergyPt,
 								this, _1, _2, _3, _4),
 					0, allPoints.size(), 50);
@@ -624,16 +649,20 @@ namespace dso
 
 
 	//@ 向能量函数中插入一残差, 更新连接图关系
-	EFResidual *EnergyFunctional::insertResidual(PointFrameResidual *r)
+    //TODO 返回值改成void, 跟加入帧一样，调用没有接收返回值
+	EFResidual* EnergyFunctional::insertResidual(PointFrameResidual *r)
 	{
 		EFResidual *efr = new EFResidual(r, r->point->efPoint, r->host->efFrame, r->target->efFrame);
-		efr->idxInAll = r->point->efPoint->residualsAll.size(); // 在这个点的所有残差的id
-		r->point->efPoint->residualsAll.push_back(efr);			// 这个点的所有残差
+		//; 这个残差在他所在的点所构成的所有残差中的索引，应该<8？因为极端就是这个点在滑窗最前面的帧上，
+        //; 和滑窗最后面的帧全都构成了残差，所以最大也就到8？
+        //TODO 验证这里是否最大到8，也就是滑窗中关键帧索引个数
+        efr->idxInAll = r->point->efPoint->residualsAll.size(); // 在这个点的所有残差的id
+		r->point->efPoint->residualsAll.push_back(efr);	 //; 把这个点能量残差加入到后端点中
 
 		// 两帧之间的res计数加一
 		connectivityMap[(((uint64_t)efr->host->frameID) << 32) + ((uint64_t)efr->target->frameID)][0]++;
 
-		nResiduals++;
+		nResiduals++;         //; 滑窗中总的残差个数
 		r->efResidual = efr;  //; 前端的点残差 持有 这个点能量残差
 		return efr;
 	}
@@ -647,21 +676,25 @@ namespace dso
 	 *         3.记录共视关系
 	 * @param[in] fh 
 	 * @param[in] Hcalib 
-	 * @return EFFrame* 
+	 * @return EFFrame*  返回构造的后端能量帧的指针，实际调用这个函数无接受返回值
 	 */
-	EFFrame *EnergyFunctional::insertFrame(FrameHessian *fh, CalibHessian *Hcalib)
+    //TODO: 函数返回值直接void即可，调用此函数时没有接收返回值
+	EFFrame* EnergyFunctional::insertFrame(FrameHessian *fh, CalibHessian *Hcalib)
 	{
+        // Step 1 使用前端关键帧 构造 后端能量函数帧，并且二者互相持有指针
 		// 建立优化用的能量函数帧. 并加进能量函数frames中
-		EFFrame *eff = new EFFrame(fh);
-		eff->idx = frames.size();  //; frames是能量函数帧的vector
-		frames.push_back(eff);
-
+		EFFrame *eff = new EFFrame(fh);  //; 利用FrameHessian构造EFFrame,在构造函数里会把前端帧的信息拿到EFFrame中
+		//; 设置在所有能量函数帧中的索引，我感觉应该和前端帧在滑窗中的索引是一样的?
+        eff->idx = frames.size();  //; frames是能量函数帧的vector
+        //TODO 这里可以测试一下后端的关键帧索引和前端关键帧索引是否一样
+		frames.push_back(eff);  
 		// 表示energyFunction中图像帧数量的nFrames加1（用来确定优化变量的维数，每个图像帧是8维）
 		nFrames++;
 		fh->efFrame = eff; // FrameHessian 指向能量函数帧
 
 		assert(HM.cols() == 8 * nFrames + CPARS - 8); // 边缘化掉一帧, 缺8个
 
+        // Step 2 resize 上次边缘化关键帧得到
         //! 重要：上次边缘化之后，HM和bM的维度缩减了一帧的维度，因为这里加入的最新帧，所以要把HM和bM维度重新扩张
 		//; resize优化变量的维数，一个帧8个参数 + 相机内参（4维）
 		bM.conservativeResize(8 * nFrames + CPARS);
@@ -670,24 +703,27 @@ namespace dso
 		bM.tail<8>().setZero();
 		HM.rightCols<8>().setZero();
 		HM.bottomRows<8>().setZero();
-
-		EFIndicesValid = false;
-		EFAdjointsValid = false;
+ 
+		EFIndicesValid = false;   //; 下面接着就成true了，所以这里无效
+		EFAdjointsValid = false;  //; 下面接着就成true了，所以这里无效
 		EFDeltaValid = false;
 
+        // Step 3 由于新加入了一帧，所以从头到尾重新计算所有帧之间的伴随矩阵，内部还会设置相机内参先验
 		//; 计算伴随矩阵：注意这个是为了求残差对ij帧的绝对位姿来的，因为之前算的都是残差对相对位姿
-		setAdjointsF(Hcalib); 
-		//; 重新设置滑窗中的EFFrame、EFPoints、EFResidual的ID号
-		makeIDX();			  // 设置ID
+		setAdjointsF(Hcalib);   //; 内部置位EFAdjointsValid = true
 
-		//; 再遍历滑窗中的所有EFFrame, 添加ID号和数目？
-		//! 疑问：没看懂这里在搞什么操作
-		//! 暂时的解答：看上面说的，这里应该是在记录共视关系？
+        // Step 4 重新设置滑窗中的EFFrame、EFPoints、EFResidual的ID号
+        //TODO 我感觉这里是多余的，因为刚把这个关键帧加进来，它还没有和老帧形成任何残差，所以下面函数做无用功
+		makeIDX();	 //; EFIndicesValid = true
+
+		// Step 5 重新构建所有历史关键帧的共视关系，这个应该和滑窗优化无关
 		for (EFFrame *fh2 : frames)
 		{
 			// 前32位是host帧的历史ID, 后32位是Target的历史ID
+            //; 1.当前帧作为host, 其他帧作为target
 			connectivityMap[(((uint64_t)eff->frameID) << 32) + ((uint64_t)fh2->frameID)] = 
 				Eigen::Vector2i(0, 0);
+            //; 2.其他帧作为host，当前帧作为target
 			if (fh2 != eff)
 			{
 				connectivityMap[(((uint64_t)fh2->frameID) << 32) + ((uint64_t)eff->frameID)] = 
@@ -1304,16 +1340,18 @@ namespace dso
 	void EnergyFunctional::makeIDX()
 	{
 		// 重新赋值ID
-        // Step 1 所有帧重新赋值ID
+        // Step 1 所有帧重新赋值ID。靠，我感觉完全多余操作啊？
 		//; frames是类的成员变量，一个vector，存储所有 EFFrame*
 		for (unsigned int idx = 0; idx < frames.size(); idx++)
 		{
 			frames[idx]->idx = idx;  //; 重新赋值idx，变成在vector中存储的id
 		}
         
-        // Step 2 重新存储所有的host点，并且重新计算这些点构成的残差的host帧和target帧id
+        // Step 2 因为上面重新排列的关键帧的ID，所以也要更新点能量残差中关联的关键帧ID
+        //TODO 感觉纯属多次一举，关联了能量帧就够了，能量帧里面已经存储了它们自己的ID啊？
+        //     你为啥在点能量残差中再加一个ID呢？多此一举
 		//; allPoints是类成员变量，一个vector, 存储所有 EFPoint*
-		allPoints.clear();  //; 先把所有的点清空，下面重新加入点
+		allPoints.clear();  //; 先把所有的能量点清空，下面重新加入点
         // 遍历所有关键帧
 		for (EFFrame *f : frames)
 		{
@@ -1344,7 +1382,7 @@ namespace dso
 	VecX EnergyFunctional::getStitchedDeltaF() const
 	{
 		VecX d = VecX(CPARS + nFrames * 8); //; 68维的状态增量
-        //; 1.当前状态的相机内参 - 相机内参先验
+        //; 1.当前状态的相机内参 - 相机内参先验(也可认为是FEJ线性化点的状态)
 		d.head<CPARS>() = cDeltaF.cast<double>(); // 相机内参增量
 
         //; 2.对于帧来说，就是当前相机状态(位姿、光度) - 线性化点的状态

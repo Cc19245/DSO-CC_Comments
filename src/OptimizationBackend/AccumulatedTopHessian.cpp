@@ -46,6 +46,11 @@ namespace dso
      * @param[in] ef 
      * @param[in] tid 线程个数，默认实参=0
      */
+    //! 7.27增：
+    //;  对三种模式再进行一下讲解：
+    //;  mode = 0: 最先调用，就是正常计算这次的Hessian
+    //;  mode = 1: 其次调用，目的是计算上次边缘化的Hessian, 但是应该是上次边缘化的点直接丢掉了，所以这里并不起作用
+    //;  mode = 2: 最后调用，本次优化结束，要对部分点进行边缘化，所以要重新计算Hessain给边缘化使用
 	template <int mode>  // 0 = active, 1 = linearized, 2=marginalize
 	void AccumulatedTopHessianSSE::addPoint(EFPoint *p, EnergyFunctional const *const ef, int tid) 
 	{
@@ -91,6 +96,8 @@ namespace dso
 					continue;
 				assert(r->isLinearized);
 			}
+            //TODO 这里确实可以验证一下，比如把下面的注释放开，或者使用assert看看使用mode=1会不会运行到这里
+            ////;; 如果mode=1正常状态应该是不会运行到这里，因为在上面判断isLinearized的时候就continue掉了
 			// if(mode == 1)
 			// {
 			// 	printf("yeah I'm IN !");
@@ -101,21 +108,23 @@ namespace dso
 			//* ID 来控制不同帧之间的变量, 区分出相同两帧 但是host target角色互换的
             //; htIDX就得到了这个残差在acc累加器数组中在那个位置
 			int htIDX = r->hostIDX + r->targetIDX * nframes[tid];  //; 注意tid默认实参=0，nframes[0]就是所有关键帧个数
-			//; 这个是当前状态相比线性化点的状态所增加的状态量，也是在之前调用 setPrecalcValues 预先计算的
+			//; 这个是 当前两帧的相对状态 - 线性化点处两帧的相对状态，也是在之前调用 setPrecalcValues 预先计算的
             Mat18f dp = ef->adHTdeltaF[htIDX]; // 位姿+光度a b
 
             //; VecNRf 8x1向量
 			VecNRf resApprox;  // 8x1的残差，就是pattern周围的残差
-            //; active活跃点的情况最简单，直接就是之前计算的雅克比
+            //; active活跃点的情况最简单，直接就是之前计算的8x1的pattern残差
 			if (mode == 0)  
 				resApprox = rJ->resF;
-            //; marginalize边缘化使用的res_toZeroF 在EFResidual::fixLinearizationF()赋值
+            //; marginalize边缘化使用的res_toZeroF 在EFResidual::fixLinearizationF()赋值，其实就是把b部分
+            //;  在此恢复到线性化点的地方，因为在这之前b部分是最新的线性化的结果
 			if (mode == 2)  
 				resApprox = r->res_toZeroF;  //; 如果是边缘化的情况，那么需要它的能量是之前的能量
 
             //; linearized线性化的情况，涂金戈的博客(https://www.cnblogs.com/JingeTU/p/8586163.html)
             //; 中详细阐述了，实际上这个if是一定不会满足的，但是博客中他仍然给出了下面代码的解析
             //? 上面的解释不太对，这个mode是可以根据不同的模板值来传入的，所以这里还是可以进入这个if函数的
+            //! 7.27增：上面解释是对的，因为传入mode=1的时候，在上面判断isLinerized的时候就continue了
 			if (mode == 1)  
 			{
 				//* 因为计算的是旧的, 由于更新需要重新计算
@@ -202,12 +211,18 @@ namespace dso
              * 清除AF相关变量的信息。这三个成员变量将用于计算逆深度的优化量。局部变量Hdd_acc, bd_acc, 
              * Hcd_acc对应着这些EFPoint的成员变量，最后赋值到成员变量。
              */
-            // Step 2 计算后面舒尔补部分要用的，和深蓝PPT P36对应
+            // Step 2 计算后面舒尔补部分要用的，和深蓝PPT P36下面对应
             //; 7.26增：不是！这个地方和P36非常像，但不是一样的。P36涉及的状态只有位姿、内参、光度，不涉及逆深度，
             //;      因为最后舒尔消元得到的只是这些状态的正规方程而没有逆深度。但是最后求解完相机状态的正规方程
             //;      得到相机状态增量之后，还需要反带到逆深度的方程中求解逆深度，所以总的H和b中和逆深度同一行的
             //;      部分也是需要在构造H和b的时候构造出来的，所以这里就是在构造这部分。
-            //?     下面使用 += 就是这个点和其他帧上的点构成的残差，都可以算作这个点的逆深度的hessain部分，所以是+=
+            //? 下面使用 += 就是这个点和其他帧上的点构成的残差，都用的这个点的逆深度的hessain部分，所以是+=
+            //! 7.27增：
+            //;  这个地方确实对应的是深蓝PPT P36，不过不是下面那张PPT，而是上面那张PPT。这里就是在为后面
+            //;  对逆深度进行舒尔消元计算准备的变量。但是为什么这里可以累加呢？虽然逆深度用的是同一个点的逆深度，
+            //;  但是hessian部分并不是相同的帧啊？其实原因就在于这里是在计算hessian中关于相机内参的部分，
+            //;  因为相机内参只有一个，滑窗中所有关键帧都共享一个相机内参，所以尽管不用帧的hessain应该单独计算
+            //;  但是他们的hessain中关于相机内参的部分都是对同一个内参的，因此可以相加。
 			Vec2f Ji2_Jpdd = rJ->JIdx2 * rJ->Jpdd;  // 中间变量，无意义
             //; 1x1, (残差 * 残差对像素坐标的雅克比) * 像素坐标对逆深度的雅克比 = 残差 * 残差对逆深度的雅克比
             //;  这个就是b_d，即当前这个点的逆深度部分的b，因为b = J*e, 所以这里算的就是J*e
@@ -221,7 +236,7 @@ namespace dso
             Hcd_acc += rJ->Jpdc[0] * Ji2_Jpdd[0] + rJ->Jpdc[1] * Ji2_Jpdd[1]; //* 光度对内参J*光度对逆深度J
 
 			nres[tid]++;
-		} // 遍历这个点构成的所有残差完毕
+		} //! --------------------  遍历这个点构成的所有残差完毕 --------------------------
 
         //; active模式，则属于正常的普通状态，所以累加结果存到A相关的变量中
 		if (mode == 0)
@@ -233,7 +248,8 @@ namespace dso
         //; 线性化或者边缘化模式，都会设置L相关的变量
 		if (mode == 1 || mode == 2)
 		{
-            //! 注意：在mode=1的时候，实际上面的遍历没有实际作用，所以这里全是0
+            //! 注意：在mode=1的时候，实际上面的for循环遍历没有实际作用，所以这里仍然是前面局部变量初始化的值0
+            //TODO 这里可以验证一下，如果mode=1，使用assert是否这个L相关变量都是0
 			p->Hdd_accLF = Hdd_acc;
 			p->bd_accLF = bd_acc;
 			p->Hcd_accLF = Hcd_acc;
@@ -321,7 +337,7 @@ namespace dso
 	//@ 构造Hessian矩阵, b=Jres矩阵
     /**
      * @brief 把8*8个小的hessian矩阵，拼接成最后大的hessian矩阵，为后面求解做准备
-     * 
+     *    同时注意在拼接过程中，会把相对状态的小hessian利用伴随性质变成绝对状态的大hessian
      * @param[in] H  输出，拼接完成的H，维度68x68
      * @param[in] b  输出，拼接完成的b，维度68x1
      * @param[in] EF 能量函数对象的指针
@@ -346,14 +362,15 @@ namespace dso
 		if (min == max)
 			return;
         
-        // Step 循环是遍历所有可能的 (host_frame,target_frame) 组合
+        // Step 循环是遍历所有可能的 (host_frame, target_frame) 组合
 		for (int k = min; k < max; k++) // 帧的范围 最大nframes[0]*nframes[0]
 		{
-            //; 一个取整，一个取余，得到host_id和target_id
+            //; 取整得到target_id，取余得到host_id。注意不要弄反了，因为计算总的id的时候用的公式
+            //; 是Idx = hostID + targetID * nFrames，所以targetID在整数部分
 			int h = k % nframes[0]; // 和两个循环一样
 			int t = k / nframes[0];
 
-            //; 在整个大的H中的索引，整个大的H中左上角存储相机内参部分
+            //; 在整个大的H中的索引，整个大的H中左上角存储相机内参部分，所以这里要空出来
 			int hIdx = CPARS + h * 8; // 起始元素id
 			int tIdx = CPARS + t * 8;
             // 总id，靠，这不就是k吗？
@@ -374,9 +391,9 @@ namespace dso
 
 			// Step 相对的量通过adj变成绝对的量, 并累加到 H, b 中
             //?   关于相对相对量和绝对量转换这部分，在涂金戈博客最后有讲解：https://www.cnblogs.com/JingeTU/p/8586163.html
-            //; 注意下面为什么从(4,4)开始取？因为每个小的hessian都会计算关于内参部分的hessian，并且这部分位于13x13的
-            //;  左上角4x4位置。而在整个68x68的大hessian中，只有一个4x4的内参，所这里先累加帧帧之间的位姿+光度(8x8)部分，
-            //;  最后再累加相机内参部分。
+            //; 注意下面为什么从(4,4)开始取？因为每个小的hessian都会计算关于内参部分的hessian，并且这部分
+            //; 位于13x13的左上角4x4位置。而在整个68x68的大hessian中，只有一个4x4的内参，所这里先累加
+            //; 帧帧之间的位姿+光度(8x8)部分，最后再累加相机内参部分。
             // Step 2 H部分累加
             //! 注意：好像仍然只是算了对角线的一边，另一边没有算？
             //   Step 2.1 单纯的相机位姿+光度部分
@@ -420,7 +437,7 @@ namespace dso
 		if (min == 0 && usePrior)
 		{
             //; 以下内容参见深蓝PPT P40, 可以对应的很好
-            // 1.相机内参的先验信息
+            // 1.相机内参的先验hessian,
 			H[tid].diagonal().head<CPARS>() += EF->cPrior;		// hessian先验
             //; b就是先验 H * 当前值和先验的残差e
 			b[tid].head<CPARS>() += EF->cPrior.cwiseProduct(EF->cDeltaF.cast<double>()); // H*delta 更新残差

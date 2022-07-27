@@ -176,6 +176,7 @@ namespace dso
 		double linAllPointSinle(PointHessian *point, float outlierTHSlack, bool plot);
 
 		// mainPipelineFunctions
+        //; 我真是服了这俩命名了，一个track, 一个trace，你自己看不混吗？
 		Vec4 trackNewCoarse(FrameHessian *fh);
 		void traceNewCoarse(FrameHessian *fh);
 		void activatePoints();
@@ -195,7 +196,7 @@ namespace dso
 		bool doStepFromBackup(float stepfacC, float stepfacT, float stepfacR, float stepfacA, float stepfacD);
 		void backupState(bool backupLastStep);
 		void loadSateBackup();
-		double calcLEnergy();
+		double ();
 		double calcMEnergy();
 		void linearizeAll_Reductor(bool fixLinearization, std::vector<PointFrameResidual *> *toRemove, int min, int max, Vec10 *stats, int tid);
 		void activatePointsMT_Reductor(std::vector<PointHessian *> *optimized, std::vector<ImmaturePoint *> *toOptimize, int min, int max, Vec10 *stats, int tid);
@@ -249,6 +250,7 @@ namespace dso
 		boost::mutex mapMutex; //< Mapping 线程锁
 		std::vector<FrameShell *> allKeyFramesHistory;
 
+        //; ef是整个后端优化的大boss，统筹管理所有的能量帧、能量点
 		EnergyFunctional *ef;				  //< 能量方程
 		IndexThreadReduce<Vec10> treadReduce; //< 多线程
 
@@ -256,9 +258,10 @@ namespace dso
 		PixelSelector *pixelSelector;
 		CoarseDistanceMap *coarseDistanceMap;
 
-		std::vector<FrameHessian *> frameHessians;		   //< 关键帧 // ONLY changed in marginalizeFrame and addFrame.
+        //; 滑窗中的关键帧
+		std::vector<FrameHessian *> frameHessians;	//< 关键帧 // ONLY changed in marginalizeFrame and addFrame.
 		std::vector<PointFrameResidual *> activeResiduals; //< 新加入的激活点的残差
-		float currentMinActDist;						   //<　激活点的阈值
+		float currentMinActDist;    //<　激活点的阈值
 
 		std::vector<float> allResVec; //< 所有在当前最近帧上的残差值
 

@@ -118,13 +118,14 @@ namespace dso
 		Eigen::Vector3f *dIp[PYR_LEVELS];  //!< 各金字塔层的图像导数  // coarse tracking / coarse initializer. NAN in [0] only.
 		float *absSquaredGrad[PYR_LEVELS]; //!< x,y 方向梯度的平方和 // only used for pixel select (histograms etc.). no NAN.
 
-		//* 都是ID
-		int frameID;				//!< 所有关键帧的序号(FrameShell)	// incremental ID for keyframes only!
-		static int instanceCounter; //!< 计数器
-		int idx;					//!< 激活关键帧的序号(FrameHessian)
+		//; 当前帧在历史上所有的关键帧中的ID
+		int frameID; //< 所有关键帧的序号(FrameShell)	// incremental ID for keyframes only!
+		static int instanceCounter; //< 计数器
+        //; 当前帧在滑窗中的关键帧数组中的ID
+		int idx;	 //< 激活关键帧的序号(FrameHessian)
 
 		// Photometric Calibration Stuff
-		float frameEnergyTH; //!< 阈值 // set dynamically depending on tracking residual
+		float frameEnergyTH; //< 阈值 // set dynamically depending on tracking residual
 		float ab_exposure;	 //; 曝光时间
 
 		bool flaggedForMarginalization;
@@ -140,23 +141,32 @@ namespace dso
 		Vec6 nullspaces_scale;
 
 		// variable info.
-        //; 线性化点的相机位姿，也就是新的关键帧进来经过优化之后，
-        //; 把优化后的状态设置成这个，作为下个关键帧进行滑窗优化的线性化点
-		SE3 worldToCam_evalPT; //!< 在估计的相机位姿
+        //; 线性化点的相机位姿，也就是新的关键帧进来经过后端的滑窗优化之后，即将进行一些收尾工作进入下一帧的处理。
+        //;   此时把优化后的状态设置成这个，作为下个关键帧进行滑窗优化的线性化点
+		SE3 worldToCam_evalPT;  //< 在估计的相机位姿
 
+        //! 注意下面的state相关内容非常的tricky, 真是难受
+        /**
+         * 1. 所有的state都是10维向量，但是只用了前8维，最后2维没用(不知道为啥要用10维，直接用8维不香吗？)
+         *    然后state前6维是 位姿相对线性化点的增量， 后2维是光度的绝对量，这个已经要分清。
+         * 2. 根据1的解释，可以知道state_zero和state的概念分别如下：
+         *   (1)state_zero 记录线性化点的状态：前6维表示位姿相对线性化点的增量，而此时表示的就是线性化点的状态，
+         *      因此前6维是0；后2维就代表线性化点的光度值
+         *   (2)state 记录现在的状态：前6维表示位姿相对线性化点的增量，而此时表示的是最新的状态，
+         *      因此前6维就是当前位姿相对线性化点位姿的增量；后2维就代表当前状态的光度值
+         * 3.总结：总的来说，尽管state_zero和state中既包含状态的增量也包含状态的绝对量，但是他们相减之后
+         *    得到的都是 当前状态 - 线性化点状态，也就是增量，所以最终结果是一样的  
+         */
 		// [0-5: 位姿左乘小量. 6-7: a,b 光度仿射系数]
 		//* 这三个是与线性化点的增量, 而光度参数不是增量, state就是值
-        //; 前6维是相对线性化点的增量，后2维就是光度值
-		Vec10 state_zero;	//!< 固定的线性化点的状态增量, 为了计算进行缩放
-		Vec10 state_scaled; //!< 乘上比例系数的状态增量, 这个是真正求的值!!!
-
-        //; 这里确实是状态增量，前6维
-		Vec10 state;		//!< 计算的状态增量
+		Vec10 state_zero;	//< 固定的线性化点的状态增量, 为了计算进行缩放
+		Vec10 state_scaled; //< 乘上比例系数的状态增量, 这个是真正求的值!!!
+		Vec10 state;		//< 计算的状态增量
 
 		//* step是与上一次优化结果的状态增量, [8 ,9]直接就设置为0了
-		Vec10 step;			//!< 求解正规方程得到的增量
-		Vec10 step_backup;	//!< 上一次的增量备份
-		Vec10 state_backup; //!< 上一次状态的备份
+		Vec10 step;			//< 求解正规方程得到的增量
+		Vec10 step_backup;	//< 上一次的增量备份
+		Vec10 state_backup; //< 上一次状态的备份
 
 		//内联提高效率, 返回上面的值
 		EIGEN_STRONG_INLINE const SE3 &get_worldToCam_evalPT() const { return worldToCam_evalPT; }
@@ -166,6 +176,7 @@ namespace dso
 		EIGEN_STRONG_INLINE const Vec10 get_state_minus_stateZero() const { return get_state() - get_state_zero(); } //x小量可以直接减
 
 		// precalc values
+        //; 预计算个屁，我真是服了这个命名了，这个就是最新的位姿
 		SE3 PRE_worldToCam; //!< 预计算的, 位姿状态增量更新到位姿上
 		SE3 PRE_camToWorld;
 		std::vector<FrameFramePrecalc, Eigen::aligned_allocator<FrameFramePrecalc>> targetPrecalc; //!< 对于其它帧的预运算值
@@ -283,27 +294,39 @@ namespace dso
 
 		void makeImages(float *color, CalibHessian *HCalib);
 
-		//* 获得先验信息矩阵， 怎么感觉除了第一帧没什么用
+
+        /**
+         * @brief 获取关键帧的位姿、光度先验的hessian, 注意是hessian部分，不是状态部分
+         * 
+         * @return Vec10 
+         */
 		inline Vec10 getPrior()
 		{
 			Vec10 p = Vec10::Zero();
 
+            //; 1.如果是所有历史关键帧中的第1帧，那么有位姿先验的hessian
 			if (frameID == 0) //* 第一帧就用初始值做先验
 			{
 				p.head<3>() = Vec3::Constant(setting_initialTransPrior);
 				p.segment<3>(3) = Vec3::Constant(setting_initialRotPrior);
 				// 用位运算, 有点东西
+                //; 实际配置中这里并不满足
 				if (setting_solverMode & SOLVER_REMOVE_POSEPRIOR)
 					p.head<6>().setZero();
 
 				p[6] = setting_initialAffAPrior; // 1e14
 				p[7] = setting_initialAffBPrior; // 1e14
 			}
+            //; 否则只有光度先验的hessain
 			else //* 否则根据模式决定
 			{
+                //; -1不优化
 				if (setting_affineOptModeA < 0) //* 小于零是固定的不优化
 					p[6] = setting_initialAffAPrior;
-				else
+				//! 疑问：如果优化就设置成模式值？啥玩意
+                //! 解答：有道理。
+                //; >0的话是有先验，那么先验直接设置成模式值即可； =0则无先验，这里先验值直接就是0也就是无先验了
+                else
 					p[6] = setting_affineOptModeA; // 1e12
 
 				if (setting_affineOptModeB < 0)
@@ -317,6 +340,7 @@ namespace dso
 			return p;
 		}
 
+        //; 先验的线性化点处的值, 全是0？
 		inline Vec10 getPriorZero()
 		{
 			return Vec10::Zero();
@@ -328,16 +352,20 @@ namespace dso
 	{
 		EIGEN_MAKE_ALIGNED_OPERATOR_NEW;
 		static int instanceCounter;
+
 		// * 4×1的向量
-		VecC value_zero;			 //!< FEJ固定点
-		VecC value_scaled;			 //!< 乘以scale的内参
-		VecCf value_scaledf;		 //!< float型的内参
-		VecCf value_scaledi;		 //!< 逆, 应该是求导用为, 1/fx, 1/fy, -cx/fx, -cy/fy
-		VecC value;					 //!< 没乘scale的
-		VecC step;					 //!< 迭代中的增量
-		VecC step_backup;			 //!< 上一次增量备份
-		VecC value_backup;			 //!< 上一次值的备份
-		VecC value_minus_value_zero; //!< 减去线性化点
+        //; 相机内参状态，也可以说是相机内参FEJ状态，实际上严格由于边缘化的时候不会边缘化相机内参
+        //;   因此相机内参并不存在先验状态。但是为了和相机位姿存在FEJ统一，这里也可以认为是FEJ状态
+		VecC value_zero;			 //< FEJ固定点
+		VecC value_scaled;			 //< 乘以scale的内参
+		VecCf value_scaledf;		 //< float型的内参
+		VecCf value_scaledi;		 //< 逆, 应该是求导用为, 1/fx, 1/fy, -cx/fx, -cy/fy
+		VecC value;					 //< 没乘scale的
+		VecC step;					 //< 迭代中的增量
+		VecC step_backup;			 //< 上一次增量备份
+		VecC value_backup;			 //< 上一次值的备份
+        //; 相机内参当前状态 - 相机内参先验状态(FEJ状态)
+		VecC value_minus_value_zero; //< 减去线性化点
 
 		inline ~CalibHessian() { instanceCounter--; }
 		inline CalibHessian()
@@ -351,7 +379,7 @@ namespace dso
 			initial_value[3] = cyG[0];
 
 			setValueScaled(initial_value);
-			value_zero = value;
+			value_zero = value;  //; 从这里可以看出来，value_zero自始至终都是初始值，不会重复赋值
 			value_minus_value_zero.setZero();
 
 			instanceCounter++;
@@ -494,8 +522,10 @@ namespace dso
 		}
 
 		//* 点的残差值
-		std::vector<PointFrameResidual *> residuals;				// only contains good residuals (not OOB and not OUTLIER). Arbitrary order.
-		std::pair<PointFrameResidual *, ResState> lastResiduals[2]; // contains information about residuals to the last two (!) frames. ([0] = latest, [1] = the one before).
+        // only contains good residuals (not OOB and not OUTLIER). Arbitrary order.
+		std::vector<PointFrameResidual *> residuals;	
+        // contains information about residuals to the last two (!) frames. ([0] = latest, [1] = the one before).
+		std::pair<PointFrameResidual *, ResState> lastResiduals[2]; 
 
 		void release();
 
