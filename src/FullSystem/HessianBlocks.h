@@ -164,6 +164,7 @@ namespace dso
 		Vec10 state;		//< 计算的状态增量
 
 		//* step是与上一次优化结果的状态增量, [8 ,9]直接就设置为0了
+        //; 本次优化求解终极的H△x=b得到的△x，也就是相对于上次状态的增量，[0:5]相机位姿，[6:7]相机光度，[8:9]没使用
 		Vec10 step;			//< 求解正规方程得到的增量
 		Vec10 step_backup;	//< 上一次的增量备份
 		Vec10 state_backup; //< 上一次状态的备份
@@ -360,9 +361,12 @@ namespace dso
 		VecC value_scaled;			 //< 乘以scale的内参
 		VecCf value_scaledf;		 //< float型的内参
 		VecCf value_scaledi;		 //< 逆, 应该是求导用为, 1/fx, 1/fy, -cx/fx, -cy/fy
-		VecC value;					 //< 没乘scale的
+		//; 优化之后最新的相机内参值
+        VecC value;					 //< 没乘scale的
+        //; 本次优化求出来的相机内参的增量
 		VecC step;					 //< 迭代中的增量
 		VecC step_backup;			 //< 上一次增量备份
+        //; 上一次相机的内参值
 		VecC value_backup;			 //< 上一次值的备份
         //; 相机内参当前状态 - 相机内参先验状态(FEJ状态)
 		VecC value_minus_value_zero; //< 减去线性化点
@@ -476,6 +480,12 @@ namespace dso
 		FrameHessian *host; //!< 主帧
 		bool hasDepthPrior; //!< 初始化得到的点是有深度先验的, 其它没有
 
+        //* 点的残差值
+        // only contains good residuals (not OOB and not OUTLIER). Arbitrary order.
+		std::vector<PointFrameResidual *> residuals;	
+        // contains information about residuals to the last two (!) frames. ([0] = latest, [1] = the one before).
+		std::pair<PointFrameResidual *, ResState> lastResiduals[2]; 
+
 		float my_type; //不同类型点, 显示用
 
 		float idepth_scaled;	  //!< target还是host上点逆深度 ??
@@ -522,12 +532,6 @@ namespace dso
 			nullspaces_scale = -(idepth * 1.001 - idepth / 1.001) * 500; //? 为啥这么求
 		}
 
-		//* 点的残差值
-        // only contains good residuals (not OOB and not OUTLIER). Arbitrary order.
-		std::vector<PointFrameResidual *> residuals;	
-        // contains information about residuals to the last two (!) frames. ([0] = latest, [1] = the one before).
-		std::pair<PointFrameResidual *, ResState> lastResiduals[2]; 
-
 		void release();
 
 		PointHessian(const ImmaturePoint *const rawPoint, CalibHessian *Hcalib);
@@ -538,42 +542,69 @@ namespace dso
 			instanceCounter--;
 		}
 
+
 		//@ 判断其它帧上的点是否不值得要了
+        /**
+         * @brief 
+         * 
+         * @param[in] toKeep  没使用
+         * @param[in] toMarg  要边缘化掉的关键帧的数组
+         * @return true   这个点需要被边缘化掉或者丢掉
+         * @return false  这个点保留
+         */
 		inline bool isOOB(const std::vector<FrameHessian *> &toKeep, const std::vector<FrameHessian *> &toMarg) const
 		{
-
 			int visInToMarg = 0;
+            //; 遍历这个点的所有残差
 			for (PointFrameResidual *r : residuals)
 			{
 				if (r->state_state != ResState::IN)
 					continue;
 				for (FrameHessian *k : toMarg)
+                {
 					if (r->target == k)
+                    {
+                        //; 这个点的所有残差，有多少是跟要边缘化掉的这帧所构成的
 						visInToMarg++; // 在要边缘化掉的帧被观测的数量
+                    }
+                }
 			}
-			//[1]: 原本是很好的一个点，但是边缘化一帧后，残差变太少了, 边缘化or丢掉
+
+			// Step 1 原本是很好的一个点，但是边缘化一帧后，残差变太少了, 边缘化or丢掉
+            //; setting_minGoodActiveResForMarg = 3, setting_minGoodResForMarg = 4,
+            //; 这个点的残差总数>3 && 这个点的IN状态的残差数目 > 14 (靠，我感觉这个肯定不能实现啊)
+            //; 点的残差总数 - 和边缘化的帧构成的残差数目 = 剩余的残差数目 < 3
+            //TODO 这他妈的什么判断准则？而且第2个条件我感觉不是一直不成立吗？一个点残差数目不是最多才7？打印看一下
 			if ((int)residuals.size() >= setting_minGoodActiveResForMarg && // 残差数大于一定数目
 				numGoodResiduals > setting_minGoodResForMarg + 10 &&
 				(int)residuals.size() - visInToMarg < setting_minGoodActiveResForMarg) //剩余残差足够少
+            {
 				return true;
-
-			//[2]: 最新一帧的投影在图像外了, 看不见了, 边缘化or丢掉
+            }
+            
+			// Step 2 最新一帧的投影在图像外了, 看不见了, 边缘化or丢掉
 			// 或者满足以下条件,
 			if (lastResiduals[0].second == ResState::OOB)
 				return true; //上一帧是OOB
-			//[3]: 残差比较少, 新加入的, 不边缘化
+
+			// Step 3 残差比较少, 新加入的, 不边缘化
 			if (residuals.size() < 2)
 				return false; //观测较少不设置为OOB
-			//[4]: 前两帧投影都是外点, 边缘化or丢掉
+
+			// Step 4 前两帧投影都是外点, 边缘化or丢掉
 			if (lastResiduals[0].second == ResState::OUTLIER && lastResiduals[1].second == ResState::OUTLIER)
 				return true; //前两帧都是外点
+
 			return false;
 		}
+
 
 		//内点条件
 		inline bool isInlierNew()
 		{
-			return (int)residuals.size() >= setting_minGoodActiveResForMarg && numGoodResiduals >= setting_minGoodResForMarg;
+            //; 剩余残差总个数 > 3  && 累加的IN状态的残差 > 4
+			return (int)residuals.size() >= setting_minGoodActiveResForMarg 
+                    && numGoodResiduals >= setting_minGoodResForMarg;
 		}
 	};
 

@@ -86,6 +86,8 @@ namespace dso
 
         //; 从下面看isActive，反应这个变量就是表示这个点能量残差是否是active的
 		// if residual is not OOB & not OUTLIER & should be used during accumulations
+        //; 这个赋值的时候，就是前端对点残差进行求雅克比的时候顺带判断点的状态，
+        //; 然后如果前端决定把求的雅克比传给后端，那么会把前端计算的点的状态也赋值给后端，就是这里
 		bool isActiveAndIsGoodNEW;	//< 激活的还可以参与优化
 		inline const bool &isActive() const { return isActiveAndIsGoodNEW; } //< 是不是激活的取决于残差状态
 	};

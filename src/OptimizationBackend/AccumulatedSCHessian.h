@@ -45,7 +45,7 @@ namespace dso
 			{
 				accE[i] = 0;
 				accEB[i] = 0;
-				accD[i] = 0;
+				accD[i] = 0;  //; 每个accD[i]都是一个指针，这里就是把每个指针都赋值为nullptr
 				nframes[i] = 0;
 			}
 		};
@@ -81,6 +81,7 @@ namespace dso
 			accbc[tid].initialize();
 			accHcc[tid].initialize();
 
+            //; 把后面要累计的所有累加器全部置为0
 			for (int i = 0; i < n * n; i++)
 			{
 				accE[tid][i].initialize();

@@ -244,7 +244,7 @@ namespace dso
 		// 实在不懂leftToleft_0这个名字怎么个含义
         // Step 1 线性化点的值
 		// 优化前host target间位姿变换
-        //TODO 这里最新帧的get_worldToCam_evalPT是在哪设置的？找了很久也没有找到
+        //TODO 这里最新帧的线性化点get_worldToCam_evalPT是在哪设置的？找了很久也没有找到
         //; get_worldToCam_evalPT是这一帧正在估计的相机位姿？那么这个在优化之前调用，也就是优化之前的相对位姿？
 		SE3 leftToLeft_0 = target->get_worldToCam_evalPT() * host->get_worldToCam_evalPT().inverse();
 		PRE_RTll_0 = (leftToLeft_0.rotationMatrix()).cast<float>();  //; PRE是Precalc的前缀pre, 表示预计算

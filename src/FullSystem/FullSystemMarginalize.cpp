@@ -172,15 +172,18 @@ namespace dso
 		// Step 2 删除其它帧在被边缘化帧上的残差
 		for (FrameHessian *fh : frameHessians)
 		{
+            //; 删除其他帧在边缘化帧的值，所以这里要是边缘化帧就要跳过
 			if (fh == frame)
 				continue;
 
+            //; 遍历其他帧上的所有点，点上的所有残差
 			for (PointHessian *ph : fh->pointHessians)
 			{
 				for (unsigned int i = 0; i < ph->residuals.size(); i++)
 				{
 					PointFrameResidual *r = ph->residuals[i];
-					if (r->target == frame)
+					//; 其他帧有以边缘化帧为target帧的残差的化，就要把残差删掉
+                    if (r->target == frame)
 					{
 						if (ph->lastResiduals[0].first == r)
 							ph->lastResiduals[0].first = 0;
@@ -191,10 +194,11 @@ namespace dso
 							statistics_numForceDroppedResFwd++;
 						else
 							statistics_numForceDroppedResBwd++;
-
+                        //; 前后端都删除这个点的残差
 						ef->dropResidual(r->efResidual);
 						deleteOut<PointFrameResidual>(ph->residuals, i);
-						break;
+                        //; 这个break加不加都行，加了更快，因为某一帧上某个点的所有残差，只有可能有一个是和边缘化帧构成的
+						break;  
 					}
 				}
 			}
@@ -204,19 +208,25 @@ namespace dso
 			std::vector<FrameHessian *> v;
 			v.push_back(frame);
 			for (IOWrap::Output3DWrapper *ow : outputWrapper)
+            {
 				ow->publishKeyframes(v, true, &Hcalib);
+            }
 		}
 
+        //; 告诉前端shell, 边缘化的信息。这是啥信息？
 		frame->shell->marginalizedAt = frameHessians.back()->shell->id;
 		frame->shell->movedByOpt = frame->w2c_leftEps().norm();
 
+        //; 从关键帧数组中弹出这个关键帧，但是注意这里并没有delete释放内存
 		deleteOutOrder<FrameHessian>(frameHessians, frame);
+
+        //; 给关键帧数组中的关键帧重新赋值索引
 		for (unsigned int i = 0; i < frameHessians.size(); i++)
         {
 			frameHessians[i]->idx = i;
         }
         
-        // Step 3 重新设置预计算值
+        // Step 3 重新设置预计算值和伴随值，因为删掉了一个关键帧
 		setPrecalcValues();
 		ef->setAdjointsF(&Hcalib);
 	}

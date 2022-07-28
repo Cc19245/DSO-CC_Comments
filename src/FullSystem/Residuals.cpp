@@ -88,6 +88,14 @@ namespace dso
      * @param[in] HCalib 
      * @return double 
      */
+    //! 7.28增：
+    //; 注意此函数内并非盲目的计算所有残差的雅克比那么简单，计算的时候会同时判断这个残差的状态，即该残差是否有效。
+    //; 残差一共有3中状态：
+    //; (1)IN：有效残差
+    //; (2)OOB: Out Of Boundary，出界。这个是指host帧上的点通过相机位姿投影到target帧上，超出了target帧的图像
+    //;        范围，这里会判断不论使用线性化点的位姿还是当前位姿，都不能超出图像边界，有一个超出就是OOB
+    //; (3)OUTLIER: 外点。注意和上面区分，外点是指异常的点，具体在代码里是指它投到图像上之后能量大于阈值，类似
+    //;             特征点法中的特征点匹配，虽然匹配上了，但是误差太大了，属于误匹配
 	double PointFrameResidual::linearize(CalibHessian *HCalib)
 	{
 		state_NewEnergyWithOutlier = -1;
@@ -95,7 +103,7 @@ namespace dso
         //; 上一次的状态如果是出界，则直接返回
 		if (state_state == ResState::OOB)
 		{
-			state_NewState = ResState::OOB;
+			state_NewState = ResState::OOB;  //; 最新的状态也设置成出界
 			return state_energy;
 		}
 
@@ -131,6 +139,7 @@ namespace dso
 			if (!projectPoint(point->u, point->v, point->idepth_zero_scaled, 0, 0, HCalib,
 							  PRE_RTll_0, PRE_tTll_0, drescale, u, v, Ku, Kv, KliP, new_idepth))
 			{
+                //; 最新的状态设置成出界
 				state_NewState = ResState::OOB;  //; 标志这个残差的最新状态是出界，直接返回
 				return state_energy;
 			} // 投影不在图像里, 则返回OOB
@@ -233,6 +242,7 @@ namespace dso
 			if (!projectPoint(point->u + patternP[idx][0], point->v + patternP[idx][1], 
                 point->idepth_scaled, PRE_KRKiTll, PRE_KtTll, Ku, Kv))
 			{
+                //; 最新的状态设置成出界
 				state_NewState = ResState::OOB;
 				return state_energy;
 			}
@@ -253,6 +263,7 @@ namespace dso
 
 			if (!std::isfinite((float)hitColor[0]))
 			{
+                //; 最新的状态设置成出界
 				state_NewState = ResState::OOB;
 				return state_energy;
 			}
@@ -396,6 +407,8 @@ namespace dso
 		if (copyJacobians)
 		{
             //; 上次的状态是Out Of Boundary，即出界，那么直接返回
+            //; 也就是说，一个点一旦上一次被判断为出界，那么以后永远都不会再使用它了。
+            //; 但是如果他被判断为外点，则是由于点的无匹配导致能量太大，所以还要判断这次的状态如何，还是有可能继续使用它的
 			if (state_state == ResState::OOB)
 			{
 				assert(!efResidual->isActiveAndIsGoodNEW);
@@ -410,10 +423,12 @@ namespace dso
 			}
 			else
 			{
+                //; 如果前端计算的最新状态是出界点、外点，那么也告诉后端，优化的时候别再用这个点的点能量残差了
 				efResidual->isActiveAndIsGoodNEW = false;
 			}
 		}
 
+        //; 这里备份上一次的状态
 		setState(state_NewState);
 		state_energy = state_NewEnergy;
 	}

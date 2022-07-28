@@ -762,20 +762,22 @@ namespace dso
 	{
 		assert(EFIndicesValid);
 
-		std::vector<FrameHessian *> fhsToKeepPoints;
-		std::vector<FrameHessian *> fhsToMargPoints;
+		std::vector<FrameHessian *> fhsToKeepPoints;  // 实际没用
+		std::vector<FrameHessian *> fhsToMargPoints;  //; 要被边缘化掉的帧
 
 		//if(setting_margPointVisWindow>0)
-		{ //bug 又是不用的一条语句
+		{ 
+            //bug 又是不用的一条语句
             //! 靠，确实是bug啊，这个i指向最新帧索引，还要>=最新帧个数，肯定不满足啊？？
 			for (int i = ((int)frameHessians.size()) - 1; i >= 0 && i >= ((int)frameHessians.size()); i--)
 			{
+                //TODO 这里可以加个assert看看能不能运行到这里
             	if (!frameHessians[i]->flaggedForMarginalization)
                 {
 					fhsToKeepPoints.push_back(frameHessians[i]);
                 }
             }
-            // Step 1 遍历所有帧，之前被标记要margin的点存入数组中
+            // Step 1 遍历所有帧，之前被标记要margin的帧存入数组中。判断margin的帧在本次优化之间就判断了
 			for (int i = 0; i < (int)frameHessians.size(); i++)
 			{
                 if (frameHessians[i]->flaggedForMarginalization)
@@ -801,27 +803,34 @@ namespace dso
 					continue;
                 }
                 
-                // Step 2.1 不正常的点直接丢掉
+                // Step 2.1 不正常的点直接丢掉：前面优化完了也没有判断点的深度是否正常，所以在这里判断
 				//* 丢掉相机后面, 没有残差的点
                 //; 后面残差为0的这个条件，在之前移除外点的时候就是用它判断的，怎么可能还存在？
+                //TODO 我感觉确实后面这个条件不会满足了，可以进入if之后使用assert试一下
 				if (ph->idepth_scaled < 0 || ph->residuals.size() == 0)
 				{
-					host->pointHessiansOut.push_back(ph);
-					ph->efPoint->stateFlag = EFPointStatus::PS_DROP;
-					host->pointHessians[i] = 0;
+					host->pointHessiansOut.push_back(ph);  //; 跟删除点一样，把点存到删除的数组里
+					ph->efPoint->stateFlag = EFPointStatus::PS_DROP;  //; 标记后端能量点
+					host->pointHessians[i] = 0;  //; 指针置零，但是没有把后边的指针放到置零的这里，我感觉可以放吧？
 					flag_nores++;
 				}
-                // Step 2.2 边缘化的帧上持有的所有点，内点则边缘化掉，外点则直接丢掉
+                // Step 2.2 边缘化的帧上持有的所有点，好的点则边缘化掉，不好的点则直接丢掉
 				//* 把边缘化的帧上的点, 以及受影响较大的点标记为边缘化or删除
                 //; OOB是Out Of Boundary，也就是点投影下来没有落到视场内，因此没有构成残差项 
-				else if (ph->isOOB(fhsToKeepPoints, fhsToMargPoints) || host->flaggedForMarginalization)
+                //! 7.28增：
+                //; 如果这个点 是   或者 是边缘化帧上的点
+                //; 从上面来看，这里fhsToKeepPoints是空的vector啊？--> 解答：实际上isOOB这个函数内部也没有使用这个变量
+				//TODO: 这里看看isOOB有没有可能是true
+                else if (ph->isOOB(fhsToKeepPoints, fhsToMargPoints) || host->flaggedForMarginalization)
 				{
 					flag_oob++;
-					//* 如果是一个内点, 则把残差在当前状态线性化, 并计算到零点残差
+					// Step 2.2.1 如果是一个内点, 则把残差在当前状态线性化, 并计算到零点残差
+                    //; 这里并不是内点那么简单，而是根据这个点的残差个数进行判断的
 					if (ph->isInlierNew())
 					{
 						flag_in++;
 						int ngoodRes = 0;
+                        //; 遍历这个点的所有残差进行线性化，因为要对这个点进行边缘化了
 						for (PointFrameResidual *r : ph->residuals)
 						{
 							r->resetOOB();
@@ -841,6 +850,7 @@ namespace dso
 							}
 						}
 						//* 如果逆深度的协方差很大直接扔掉, 小的边缘化掉
+                        //; hessian大于阈值，说明协方差足够小，那么就可以边缘化
 						if (ph->idepth_hessian > setting_minIdepthH_marg)
 						{
 							flag_inin++;
@@ -849,11 +859,12 @@ namespace dso
 						}
 						else
 						{
+                            //; 否则hessian太小，协方差太大，点不准确，就直接丢掉
 							ph->efPoint->stateFlag = EFPointStatus::PS_DROP;
 							host->pointHessiansOut.push_back(ph);
 						}
 					}
-					//* 不是内点直接扔掉
+					// Step 2.2.2 不是内点直接扔掉
 					else
 					{
 						host->pointHessiansOut.push_back(ph);
@@ -863,9 +874,17 @@ namespace dso
 
 					host->pointHessians[i] = 0; // 把点给删除
 				}
-			}
+                else
+                {
+                    // CC : 空，这个else是自己加的，为了代码更加规范
+                    //! 疑问：万一上面两个都不满足呢？进来这个分支咋办？
+                    //TODO： 这里看看有没有可能会进来这个分支
+                }
+			} //!  -----------  遍历这个关键帧持有的所有点结束  ---------------------
 
 			//* 删除边缘化或者删除的点
+            //; 靠，放在上面哪个循环里不好吗？先用一个变量把帧上所有的点的pointHessians[]的size读出来，
+            //; 然后就可以遍历了啊？
 			for (int i = 0; i < (int)host->pointHessians.size(); i++)
 			{
 				if (host->pointHessians[i] == 0)
@@ -1285,10 +1304,9 @@ namespace dso
 			return; // 优化后的能量函数太大, 认为是跟丢了
 
 
-		// Step 8  去除外点, 把最新帧设置为参考帧
+		// Step 8  去除PointHessian中的外点, 把最新帧设置为参考帧
 		// =========================== REMOVE OUTLIER =========================
 		// Step 8.1 去除外点，内部判断使用前端的点的残差个数为0，后端删除的时候又是用后端能量的残差个数为0，有点搞不懂
-        //! 疑问：前端残差为0，是什么时候标记的？
         removeOutliers();
 		{
             // Step 8.2 把最新帧设置为参考关键帧，为下一帧的前端跟踪使用
@@ -1307,7 +1325,9 @@ namespace dso
 		// =========================== (Activate-)Marginalize Points =========================
 		// Step 9.1 遍历边缘化帧上的点，根据其情况选择边缘化掉还是丢掉，边缘化掉的点要重新计算其在边缘化状态的残差
         flagPointsForRemoval();
-		ef->dropPointsF(); // 扔掉drop的点
+        //; 上面的函数中，会边缘化或丢掉一些点，但是函数里只是设置了后端能量点的标志，并没有实际删除，
+        //;  所以这里还要手动调用一下后端函数删除这些能量点
+		ef->dropPointsF();   // 扔掉drop的点
         // Step 9.2 更新零空间
         // 每次设置线性化点都会更新零空间
 		getNullspaces(
@@ -1316,8 +1336,8 @@ namespace dso
 			ef->lastNullspaces_affA,
 			ef->lastNullspaces_affB);
         // Step 9.3 真正执行对点的边缘化操作，其中就是对这个点构成的残差计算雅克比，然后再算H和b
-        //     Step 然后把这个点舒尔补边缘化掉，得到的剩余的H和b累加到HM和bM上
-		// 边缘化掉点, 加在HM, bM上
+        //   Step   然后把这个点舒尔补边缘化掉，得到的剩余的H和b累加到HM和bM上
+		// 边缘化掉点, 加在HM, bM上，注意此时还没有边缘化帧，所以此时的HM和bM还是68x68维度的
 		ef->marginalizePointsF();  //; 边缘化不需要的点
 
 
@@ -1327,7 +1347,7 @@ namespace dso
 
 		for (IOWrap::Output3DWrapper *ow : outputWrapper)
 		{
-			ow->publishGraph(ef->connectivityMap);
+			ow->publishGraph(ef->connectivityMap);  //; 历史帧的共视连接图
 			ow->publishKeyframes(frameHessians, false, &Hcalib);
 		}
 
@@ -1341,6 +1361,7 @@ namespace dso
 			{
 				marginalizeFrame(frameHessians[i]);  //; 边缘化掉关键帧
 				i = 0;  // i = 0? 操什么骚操作啊？
+                //! 疑问：要是frameHessians[0/1]都是margin的帧那这里就成死循环了啊？
 			}
         }
 		printLogLine();
@@ -1494,7 +1515,14 @@ namespace dso
 		printf("INITIALIZE FROM INITIALIZER (%d pts)!\n", (int)firstFrame->pointHessians.size());
 	}
 
+
 	//@ 提取新的像素点用来跟踪
+    /**
+     * @brief 在最新关键帧上提取新的特征点作为未成熟点，用于下次的跟踪优化
+     * 
+     * @param[in] newFrame 
+     * @param[in] gtDepth 
+     */
 	void FullSystem::makeNewTraces(FrameHessian *newFrame, float *gtDepth)
 	{
 		pixelSelector->allowFast = true; //bug 没卵用

@@ -151,7 +151,7 @@ namespace dso
 				adTargetF[h + t * nFrames] = adTarget[h + t * nFrames].cast<float>();
 			}
 		}
-        //; 同理这里也是把double类型赋值给float类型
+        //; 同理这里也是把double类型赋值给float类型，其实放在上面计算cPrior之后代码会更清晰一点
 		cPriorF = cPrior.cast<float>(); 
 
 		EFAdjointsValid = true;
@@ -436,7 +436,8 @@ namespace dso
 			h->data->step.head<8>() = -x.segment<8>(CPARS + 8 * h->idx); // 帧位姿和光度求解的增量
 			h->data->step.tail<2>().setZero();  
 
-			//* 绝对位姿增量变相对的
+			//; 绝对位姿增量变相对的这个是为了给下面计算逆深度的增量使用的，因为逆深度的在每个小的hessian求解，
+            //; 而每个小hessian求的都是相对状态，所以这里也要把状态增量变成相对状态增量
 			for (EFFrame *t : frames)
             {
                 xAd[nFrames * h->idx + t->idx] = xF.segment<8>(CPARS + 8 * h->idx).transpose() * adHostF[h->idx + nFrames * t->idx] + xF.segment<8>(CPARS + 8 * t->idx).transpose() * adTargetF[h->idx + nFrames * t->idx];
@@ -782,7 +783,11 @@ namespace dso
 		// residual关键减一
 		connectivityMap[(((uint64_t)r->host->frameID) << 32) + ((uint64_t)r->target->frameID)][0]--;
 		nResiduals--;
+
+        //; 后端残差对应的前端残差指针设置nullptr
 		r->data->efResidual = 0; // pointframehessian指向该残差的指针
+
+        //; 重要：最后从内存中抹去这个残差
 		delete r;
 	}
 
@@ -928,11 +933,14 @@ namespace dso
                 //; 如果这个点是要被边缘话掉的, 则把这个点加入到数组中
 				if (p->stateFlag == EFPointStatus::PS_MARGINALIZE)
 				{
-					p->priorF *= setting_idepthFixPriorMargFac; //? 这是干啥 ???
+                    //; setting_idepthFixPriorMargFac = 600*600
+                    //! 疑问：乘以这个数干啥的？priorF是逆深度的先验信息矩阵
+					p->priorF *= setting_idepthFixPriorMargFac;
 					for (EFResidual *r : p->residualsAll)
                     {
-						if (r->isActive()) // 边缘化残差计数
+						if (r->isActive()) 
                         {
+                            //; 更新一下历史所有帧的连接关系共视图
 							connectivityMap[(((uint64_t)r->host->frameID) << 32) + ((uint64_t)r->target->frameID)][1]++;
                         }
                     }
@@ -946,11 +954,15 @@ namespace dso
 		accSSE_top_A->setZero(nFrames);
 		for (EFPoint *p : allPointsToMarg)
 		{
-            //; 使用模式2，边缘化点的模式
+            //; 使用模式2，边缘化点的模式，模式2里面使用残差的时候就不会使用resF, 因为这个是最新的残差，
+            //; 而是会使用之前计算的 res_toZeroF 这个恢复到线性化点的残差
 			accSSE_top_A->addPoint<2>(p, this); // 这个点的残差, 计算 H b
 			accSSE_bot->addPoint(p, false);		// 舒尔补部分
-			removePoint(p);
+			
+            //; 这个点执行舒尔补边缘化加入到约束中了，所以后面就不能用了，就要把这个点从后端能量点中删掉
+            removePoint(p);  
 		}
+
 		MatXX M, Msc;
 		VecX Mb, Mbsc;
         //; 把上面计算的一个个小的hessian中的结果，累加成大的68x68的hessian
@@ -1004,6 +1016,7 @@ namespace dso
 			for (int i = 0; i < (int)f->points.size(); i++)
 			{
 				EFPoint *p = f->points[i];
+                //; 根据能量点的标志，判断是否是要删除的点
 				if (p->stateFlag == EFPointStatus::PS_DROP)
 				{
                     //; 移除这个点，实际上就是把这个点构成的所有残差都删除掉
@@ -1020,8 +1033,12 @@ namespace dso
 	//@ 从EFFrame中移除一个点p
 	void EnergyFunctional::removePoint(EFPoint *p)
 	{
+        //; 删除一个Point，我感觉这个残差应该一定是0的，如果是正常删除的话。
 		for (EFResidual *r : p->residualsAll)
-			dropResidual(r); // 丢掉改点的所有残差
+        {
+            dropResidual(r); // 丢掉改点的所有残差
+        }
+			
 
 		EFFrame *h = p->host;
 		h->points[p->idxInPoints] = h->points.back();

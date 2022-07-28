@@ -64,6 +64,7 @@ namespace dso
 			PointFrameResidual *r = activeResiduals[k];  // 取出当前的这个残差
 
             // Step 1 调用这个函数，内部真正计算雅克比，返回值就是这个残差构成的能量值
+            //; 注意此函数内部还会同时判断这个残差状态是否正常，包括IN/OOB/OUTLIER三种状态，只有IN正常
 			(*stats)[0] += r->linearize(&Hcalib); // 线性化得到能量
 
             //; 固定线性化, 优化后执行？没太看懂
@@ -72,23 +73,29 @@ namespace dso
                 // Step 2 调用这个函数，把上面linearize计算的雅克比传给后端EFResidual
 				r->applyRes(true); // 把值给efResidual
 
+                //; 注意上面把前端雅克比传给后端后，还会把前端残差的状态赋值给后端残差的状态，也就是这里的isActive
 				if (r->efResidual->isActive()) // 残差是in的
 				{
                     //TODO 好像只有在构造函数里面赋值了isNew=true，其他地方都没有赋值，这里可以assert看一下
 					if (r->isNew)
 					{
 						PointHessian *p = r->point;
-						Vec3f ptp_inf = r->host->targetPrecalc[r->target->idx].PRE_KRKiTll * Vec3f(p->u, p->v, 1); // projected point assuming infinite depth.
-						Vec3f ptp = ptp_inf + r->host->targetPrecalc[r->target->idx].PRE_KtTll * p->idepth_scaled; // projected point with real depth.
-						float relBS = 0.01 * ((ptp_inf.head<2>() / ptp_inf[2]) - (ptp.head<2>() / ptp[2])).norm(); // 0.01 = one pixel.
+                        // projected point assuming infinite depth.
+						Vec3f ptp_inf = r->host->targetPrecalc[r->target->idx].PRE_KRKiTll * Vec3f(p->u, p->v, 1); 
+                        // projected point with real depth.
+						Vec3f ptp = ptp_inf + r->host->targetPrecalc[r->target->idx].PRE_KtTll * p->idepth_scaled; 
+                        // 0.01 = one pixel.
+						float relBS = 0.01 * ((ptp_inf.head<2>() / ptp_inf[2]) - (ptp.head<2>() / ptp[2])).norm(); 
 
 						if (relBS > p->maxRelBaseline)
                         {
 							p->maxRelBaseline = relBS; // 正比于点的基线长度
                         }
+                        //; 这个点的IN状态的残差数目++
 						p->numGoodResiduals++;
 					}
 				}
+                //; 如果上面判断这个残差不是IN了，那么后端一定没有使用这个残差，同时前端也可以把这个残差toRemove了
 				else
 				{
 					//* tid线程的id
@@ -186,6 +193,8 @@ namespace dso
 		{
 			Vec10 stats;
             // Step 1 遍历所有残差，对残差进行线性化，实际上就是求这些残差的雅克比
+            //; 如果fixLinearization=true，则内部执行两个操作：
+            //; 1.把这次前端求的残差最新雅克比传给后端
 			linearizeAll_Reductor(fixLinearization, toRemove, 0, activeResiduals.size(), &stats, 0);
 			lastEnergyP = stats[0];
 		}
@@ -213,6 +222,7 @@ namespace dso
 				for (PointFrameResidual *r : toRemove[i])
 				{
 					PointHessian *ph = r->point;
+
 					// 删除不好的lastResiduals
 					if (ph->lastResiduals[0].first == r)
 						ph->lastResiduals[0].first = 0;
@@ -221,9 +231,13 @@ namespace dso
 
 					for (unsigned int k = 0; k < ph->residuals.size(); k++)
                     {
+                        //; 在point的残差数组中遍历，找到了要删除的哪个就把它删除
 						if (ph->residuals[k] == r)
 						{
+                            //; 后端残差：从残差数组中弹出这个残差的位置，最后从内存中抹掉这个残差
 							ef->dropResidual(r->efResidual);
+
+                            //; 前端残差：从内存中抹掉这个残差，从残差数组中弹出这个残差的位置
 							deleteOut<PointFrameResidual>(ph->residuals, k); // residuals删除第k个
 							nResRemoved++;
 							break;
@@ -248,7 +262,7 @@ namespace dso
      * @param[in] stepfacR 
      * @param[in] stepfacA 
      * @param[in] stepfacD 
-     * @return true 
+     * @return true  是否迭代可以停止，就是判断步长是否已经足够小
      * @return false 
      */
 	bool FullSystem::doStepFromBackup(float stepfacC, float stepfacT, float stepfacR, float stepfacA, float stepfacD)
@@ -295,14 +309,15 @@ namespace dso
         else
 		{ 
             // Step 1 相机内参更新：在原状态基础上 + 本次更新步长
-            //* 相机内参更新状态
+            //; 注意相机内参这里用的是setValue，顾名思义，传入的直接就是状态值，而非增量值，也就是直接传入当前相机内参
 			Hcalib.setValue(Hcalib.value_backup + stepfacC * Hcalib.step);
 
             // Step 2 滑窗中相机状态(位姿、光度)、点的逆深度更新
-            //* 相机位姿, 光度参数更新
 			for (FrameHessian *fh : frameHessians)
 			{
                 //; 1.相机状态更新，传入的值就是本次更新后，相对于线性化点的状态增量
+                //; 注意这里写的是setState，感觉是有点混淆的，因为内部既有增量值，也有状态值
+                //; 具体来说前6维是相机位姿相对于线性化点的增量值，而后2维就是相机光度的绝对值
 				fh->setState(fh->state_backup + pstepfac.cwiseProduct(fh->step));
 
 				sumA += fh->step[6] * fh->step[6];
@@ -314,7 +329,7 @@ namespace dso
 				//* 点的逆深度更新, 注意点逆深度没使用FEJ
 				for (PointHessian *ph : fh->pointHessians)
 				{
-                    //; 设置这次更新后的逆深度
+                    //; 注意这里逆深度也是状态值，不是增量值
 					ph->setIdepth(ph->idepth_backup + stepfacD * ph->step);
 					sumID += ph->step * ph->step;
 					sumNID += fabsf(ph->idepth_backup);
@@ -556,8 +571,7 @@ namespace dso
 			backupState(iteration != 0);
 
 			// Step 3.2 求解系统
-            //! 重点：内部求解系统
-            //; 此函数执行完毕后，就得到滑窗内所有帧的位姿+光度、相机内参、所有点的逆深度的增量
+            //! 重点：内部求解系统，得到状态的增量值△x，并且存到FrameHessian/PointHessian/CaliHessian中
 			solveSystem(iteration, lambda);
 
 			double incDirChange = (1e-20 + previousX.dot(ef->lastX)) / 
@@ -621,6 +635,11 @@ namespace dso
                 {
                     //; 因为上面的linearizeAll已经计算了最新状态的雅克比，所以如果接受这次状态更新，那么直接调用
                     //; applyres这个函数把计算的最新的雅克比传给后端优化即可
+                    //! 7.28增：
+                    //; 其实上面说的不是很准确，雅克比一直是线性化点的雅克比没变，而残差会随着最新状态改变，所以只有残差变了
+                    //! 7.28增2：
+                    //; 7.28增中说的也不对，实际上雅克比并不是全都没变，因为其中位姿部分雅克比是没变，但是内参、光度、像素
+                    //; 梯度的雅克比都变了，所以并不是雅克比一直没变，而是雅克比在一直变化
                     applyRes_Reductor(true, 0, activeResiduals.size(), 0, 0);
                 }
 					
@@ -633,6 +652,10 @@ namespace dso
 			else
 			{ // 不接受, roll back
 				loadSateBackup(); //; 不接受本次更新，那么把所有状态量都恢复到之前的状态
+                //! 7.28增：
+                //; 注意这里其实是比较必须的，因为一不接受这次结果，状态回滚，但是前面为了计算最新状态的能量
+                //; 重新计算了一次最新状态的雅克比，所以这里状态回滚之后必须再次再次计算雅克比，把雅克比也恢复
+                //TODO: 不对，实际上雅克比在这个循环中一直是线性化点的雅克比，没有变过
 				lastEnergy = linearizeAll(false);  //; 再次重新计算雅克比，感觉确实不太好，万一不接受白浪费时间算雅克比
 				lastEnergyL = calcLEnergy();
 				lastEnergyM = calcMEnergy();
@@ -648,10 +671,12 @@ namespace dso
 		//* 最新一帧的位姿设为线性化点, 0-5是位姿增量因此是0, 6-7是值, 直接赋值
 		Vec10 newStateZero = Vec10::Zero();
 		newStateZero.segment<2>(6) = frameHessians.back()->get_state().segment<2>(6);
+        //; PRE_worldToCam是相机最新的位姿
 		frameHessians.back()->setEvalPT(frameHessians.back()->PRE_worldToCam,
 										newStateZero); // 最新帧设置为线性化点, 待估计量
 		EFDeltaValid = false;
 		EFAdjointsValid = false;
+        //; 因为滑窗中最新帧的线性化点已经变了，所以就要重新计算滑窗中各帧的线性化点之间的伴随矩阵
 		ef->setAdjointsF(&Hcalib); // 重新计算adj
         //; 重新计算滑窗中当前状态相对线性化点的状态增量，注意在这里调用的时候，最新帧的增量就是0，因为上面
         //; 刚刚设置线性化点。而其他帧的增量一般就不是0了，因为上面我们对这些老帧进行了优化
@@ -664,7 +689,14 @@ namespace dso
         //; 2.传入true带来两个新的操作：
         //;   (1)会把这次计算的雅克比传递给后端优化
         //;   (2)会判断要剔除的外点
+        //! 7.28增：这里又重新计算了线性化点的雅克比，有必要吗？
+        //; 解答：十分有必要，有几点可以说明：
+        //; 1.上面退出优化循环后，会把最新帧的最新状态设置成线性化点，此时线性化点改变，雅克比肯定是要重新计算的。
+        //;   并且这里传入的是true，表示会把这个雅克比传递给后端
+        //; 2.前面调用linearizeAll传入的都是false，也就是主要是能量。而这里传入true，除了上面说的会把
+        //;   最新的雅克比传给后端之外，还会判断残差外点并且剔除残差外点
 		lastEnergy = linearizeAll(true);
+
 
 		//* 能量函数太大, 投影的不好, 跟丢
 		if (!std::isfinite((double)lastEnergy[0]) || !std::isfinite((double)lastEnergy[1]) || !std::isfinite((double)lastEnergy[2]))
@@ -681,7 +713,7 @@ namespace dso
 			calibLog->flush();
 		}
 
-		// Step 5 把优化的结果, 给每个帧的shell, 注意这里其他帧的线性点是不更新的
+		// Step 5 把优化的结果, 给每个帧的shell
 		//* 把优化结果给shell
 		{
 			boost::unique_lock<boost::mutex> crlock(shellPoseMutex);
@@ -702,8 +734,10 @@ namespace dso
 
 	//@ 求解系统
     /**
-     * @brief 求解后端优化系统，这部分只是单纯的求解Hx=b，也是整个后端的核心数学部分
-     * 
+     * @brief 求解后端优化系统，这部分只是单纯的求解H△x=b，也是整个后端的核心数学部分
+     *   求解得到这次状态相对上次状态的增量△x，然后直接把这些增量存到了前端变量的step成员变量中，
+     *   比如FrameHessain->step, PointHessian->step, CaliHessian->step
+     *   
      * @param[in] iteration 
      * @param[in] lambda 
      */
@@ -740,12 +774,13 @@ namespace dso
      */
 	void FullSystem::removeOutliers()
 	{
-		int numPointsDropped = 0;
+		// int numPointsDropped = 0; //CC: 无用参数，注释掉
 		for (FrameHessian *fh : frameHessians)
 		{
 			for (unsigned int i = 0; i < fh->pointHessians.size(); i++)
 			{
 				PointHessian *ph = fh->pointHessians[i];
+                //TODO：这里指针怎么可能是nullptr呢？感觉应该不会吧？可以用assert试试看
 				if (ph == 0)
                 {
 					continue;
@@ -754,12 +789,16 @@ namespace dso
                 //!     其删除的也是这个能量点构成的所有残差，这样不是重复了吗？
 				if (ph->residuals.size() == 0) // 如果该点的残差数为0, 则丢掉
 				{
-					fh->pointHessiansOut.push_back(ph);
-					ph->efPoint->stateFlag = EFPointStatus::PS_DROP;
-					fh->pointHessians[i] = fh->pointHessians.back();
+					fh->pointHessiansOut.push_back(ph);  //; 把这帧的丢掉的所有点存起来，不知道有没有用
+
+                    //; 把后端能量点的状态置位，这样在下面调用后端dropPointsF再把后端能量点删掉
+					ph->efPoint->stateFlag = EFPointStatus::PS_DROP; //; 告诉后端能量点，这个点被丢掉了
+					
+                    //; 删除vector中间的元素的策略：把后面的元素提换要删除位置的元素，然后把最后的删掉
+                    fh->pointHessians[i] = fh->pointHessians.back();
 					fh->pointHessians.pop_back();
 					i--;
-					numPointsDropped++;
+					// numPointsDropped++;  //CC: 无用参数，注释掉
 				}
 			}
 		}
