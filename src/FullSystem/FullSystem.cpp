@@ -1620,6 +1620,7 @@ namespace dso
 		}
 	}
 
+
 	void FullSystem::printEigenValLine()
 	{
 		if (!setting_logStuff)
