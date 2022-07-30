@@ -256,7 +256,7 @@ namespace dso
 		EnergyFunctional *ef;				  //< 能量方程
 		IndexThreadReduce<Vec10> treadReduce; //< 多线程
 
-		float *selectionMap;
+		float *selectionMap;   //; 金字塔第0层图像
 		PixelSelector *pixelSelector;
 		CoarseDistanceMap *coarseDistanceMap;
 

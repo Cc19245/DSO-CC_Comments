@@ -129,10 +129,13 @@ namespace dso
 		selectionMap = new float[wG[0] * hG[0]];
 
 		coarseDistanceMap = new CoarseDistanceMap(wG[0], hG[0]);
-		coarseTracker = new CoarseTracker(wG[0], hG[0]);
-		coarseTracker_forNewKF = new CoarseTracker(wG[0], hG[0]);
-		coarseInitializer = new CoarseInitializer(wG[0], hG[0]);
+        coarseInitializer = new CoarseInitializer(wG[0], hG[0]);
 		pixelSelector = new PixelSelector(wG[0], hG[0]);
+
+        //; 有意思，tracker类有两个对象
+        coarseTracker = new CoarseTracker(wG[0], hG[0]);
+		coarseTracker_forNewKF = new CoarseTracker(wG[0], hG[0]);
+
 
 		statistics_lastNumOptIts = 0;
 		statistics_numDroppedPoints = 0;
@@ -148,6 +151,7 @@ namespace dso
 		currentMinActDist = 2;
 		initialized = false;
 
+        //; 后端求解的大boss
 		ef = new EnergyFunctional();
 		ef->red = &this->treadReduce;
 
@@ -156,10 +160,13 @@ namespace dso
 
 		needNewKFAfter = -1;
 
-		linearizeOperation = true;
+		linearizeOperation = true;  // 默认强制实时执行，如果有配置，会在调用构造函数之后再单独配置
 		runMapping = true;
+
+        //! 竟然没发现，这里还TM有个建图线程
 		mappingThread = boost::thread(&FullSystem::mappingLoop, this); // 建图线程单开
-		lastRefStopID = 0;
+		
+        lastRefStopID = 0;
 
 		minIdJetVisDebug = -1;
 		maxIdJetVisDebug = -1;

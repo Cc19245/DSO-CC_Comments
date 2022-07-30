@@ -222,7 +222,8 @@ namespace dso
 			numHave = n[0] + n[1] + n[2]; // 选择得到的点
 			quotia = numWant / numHave;	  // 想要的 与 得到的 比例
 
-			// Step 3 计算新的采像素点的, 范围大小, 相当于动态网格了, pot越小取得点越多（因为在输出图像上一个pot里面只取阈值最大的点）
+			// Step 3 计算新的采像素点的, 范围大小, 相当于动态网格了, pot越小取得点越多
+            //   Step （因为在输出图像上一个pot里面只取阈值最大的点）
 			// by default we want to over-sample by 40% just to be sure.
 			//! 问题：这里为啥要+1？
 			float K = numHave * (currentPotential + 1) * (currentPotential + 1); // 相当于覆盖的面积, 每一个像素对应一个pot*pot

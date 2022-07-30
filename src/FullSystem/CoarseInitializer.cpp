@@ -63,6 +63,8 @@ namespace dso
 		wM.diagonal()[6] = SCALE_A;
 		wM.diagonal()[7] = SCALE_B;
 	}
+
+    
 	CoarseInitializer::~CoarseInitializer()
 	{
 		for (int lvl = 0; lvl < pyrLevelsUsed; lvl++)
