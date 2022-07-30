@@ -151,6 +151,7 @@ public:
 		//;  2.建立相机光度模型，包括辐照B和光度I的非线性仿射函数G、镜头渐晕V
 		undistort = Undistort::getUndistorterForFile(calibFile, gammaFile, vignetteFile);
 
+        // Step 2.1 把Undistort类中的成员变量，拷贝复制到当前ImageFolderReader类中
 		//; 内参文件第2行：原始图像大小
 		widthOrg = undistort->getOriginalSize()[0];
 		heightOrg = undistort->getOriginalSize()[1];
@@ -159,7 +160,9 @@ public:
 		height = undistort->getSize()[1];
 
 		// load timestamps if possible.
-		loadTimestamps(); //; 加载时间戳：需要有times.txt文件
+        // Step 3 如果提供了图像时间戳和曝光时间，那么也读到类的成员变量中
+        //; 所以说这个函数重要的地方就在于它对曝光时间的读取
+		loadTimestamps(); // 需要有times.txt文件
 		printf("ImageFolderReader: got %d files in %s!\n", (int)files.size(), path.c_str());
 	}
 	~ImageFolderReader()
@@ -228,10 +231,18 @@ public:
 		return getImageRaw_internal(id, 0);
 	}
 
+    /**
+     * @brief 根据输入的图片，对其校正光度，得到最后计算使用的 辐照*曝光时间
+     * 
+     * @param[in] id  要读取的图片在图片文件夹中的索引
+     * @param[in] forceLoadDirectly  没用
+     * @return ImageAndExposure* 
+     */
 	ImageAndExposure *getImage(int id, bool forceLoadDirectly = false)
 	{
 		return getImage_internal(id, 0);
 	}
+
 
 	inline float *getPhotometricGamma()
 	{
@@ -244,7 +255,7 @@ public:
 
 	//; 这个应该是一个类成员变量，是一个Undistort类型的指针
 	// undistorter. [0] always exists, [1-2] only when MT is enabled.
-	Undistort *undistort;
+	Undistort* undistort;
 
 private:
 	//; 根据图像Id（其实就是压缩包中第几张图像）读取对应的图像
@@ -286,7 +297,13 @@ private:
 		}
 	}
 
-	//; 读取图像
+	/**
+	 * @brief 读取输入图片，对其校正光度畸变和几何畸变，然后返回 辐照值*曝光时间 
+	 * 
+	 * @param[in] id  输入的图片在文件夹中的索引
+	 * @param[in] unused 
+	 * @return ImageAndExposure*  
+	 */
 	ImageAndExposure *getImage_internal(int id, int unused)
 	{
 		// Step 1 从原始压缩文件中读取对应图像，存到自定义图像结构中

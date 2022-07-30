@@ -771,9 +771,9 @@ namespace dso
      *  把他们的标志设置为丢弃，然后调用后端的能量函数，在后端能量函数求解中根据前端设置
      *  的标志位真正丢弃。
      * 
-     */
+     */   
 	void FullSystem::removeOutliers()
-	{
+	{ 
 		// int numPointsDropped = 0; //CC: 无用参数，注释掉
 		for (FrameHessian *fh : frameHessians)
 		{

@@ -37,9 +37,10 @@ namespace dso
 {
 	/********************************
 	 * @ function: 光度矫正构造函数
-	 * 
+	 *   疑问：其中的光度标定文件到底是G还是G^-1？
+     * //! 7.30：目前认为是G，因为它的值有255，肯定就是一个能量值传进来，然后把它投影成像素为0-255，否则下面代码中为什么会有255呢？
 	 * @ param: 	file          	响应函数参数文件
-	 *		 		noiseImage   	
+	 *		 		noiseImage   	没用，最后传入的是空
 	 *		 		vignetteImage 	辐射衰减图像
 	 *				w_, h_			图像大小
 	*******************************/
@@ -61,7 +62,6 @@ namespace dso
 		}
 
 		// Step 1 光度仿射变换函数G，注意这个是从辐照B到光度I的变换，而我们最终是要去仿射变换，所以要求逆
-		//! 问题：这里G到底是正变换还是逆变换？ 猜测应该是逆变换，也就是从像素到辐照的变换
 		// read G.
 		std::ifstream f(file.c_str());
 		printf("Reading Photometric Calibration from file %s\n", file.c_str());
@@ -72,6 +72,7 @@ namespace dso
 		}
 
 		// 得到响应函数的逆变换
+        //! 疑问：这里哪里有逆变换了？扯淡
 		{
 			std::string line;
 			std::getline(f, line);
@@ -90,9 +91,11 @@ namespace dso
 			}
 
 			//; 响应函数的逆变换，直接赋值（注意参数文件给的就是U=G^-1，也就是逆变换）
+            //! 疑问：这里存疑，到底是正变换还是逆变换
 			for (int i = 0; i < GDepth; i++)
 				G[i] = Gvec[i];
 
+            //; 标定的响应函数值要是单调的，这里就是需要是递增的，这个也很符合常理
 			for (int i = 0; i < GDepth - 1; i++)
 			{
 				if (G[i + 1] <= G[i])
@@ -109,7 +112,7 @@ namespace dso
 		}
 
 		// 如果没有标定值, 则初始化为0-255 线性分布值
-		//; 注意这里默认是2，所以不会执行这一步
+		//; 注意这里默认是2，也就是有标定的gamma文件
 		if (setting_photometricCalibration == 0)
 		{
 			for (int i = 0; i < GDepth; i++)
@@ -138,6 +141,7 @@ namespace dso
 				return;
 			}
 			// 使用最大值来归一化
+            //; 对渐晕图像进行归一化，因为渐晕是0-1之间的值
 			float maxV = 0;
 			for (int i = 0; i < w * h; i++)
 				if (vm16->at(i) > maxV)
@@ -182,6 +186,7 @@ namespace dso
 			delete vm8;
 
 		// 求逆
+        //; 渐晕的逆
 		for (int i = 0; i < w * h; i++)
 			vignetteMapInv[i] = 1.0f / vignetteMap[i];
 
@@ -237,7 +242,7 @@ namespace dso
 	void PhotometricUndistorter::processFrame(T *image_in, float exposure_time, float factor)
 	{
 		int wh = w * h;
-		float *data = output->image; //; 这里直接输出到图像中
+		float *data = output->image; //; 这里直接输出到类成员变量的图像中
 		assert(output->w == w && output->h == h);
 		assert(data != 0);
 
@@ -257,7 +262,7 @@ namespace dso
 		{
 			for (int i = 0; i < wh; i++)
 			{
-				//; 这里可以看出来，G就是gamma响应的逆变换，输入像素值I，得到V*B
+				//! 重点：这里可以看出来，G就是gamma响应的逆变换，输入像素值I，得到t*V*B
 				data[i] = G[image_in[i]]; // 去掉响应函数
 			}
 			//; 如果设置中还要求去掉渐晕，这里就再除以渐晕（也就是乘以渐晕的逆）
@@ -271,12 +276,14 @@ namespace dso
 		}
 
 		//; 如果设置中不使用曝光时间，那么这里就把曝光时间统一赋值成1ms
+        //; 这里色值是false, 所以不会执行
 		if (!setting_useExposure)
 			output->exposure_time = 1;
 	}
 	// 模板特殊化, 指定两个类型
 	template void PhotometricUndistorter::processFrame<unsigned char>(unsigned char *image_in, float exposure_time, float factor);
 	template void PhotometricUndistorter::processFrame<unsigned short>(unsigned short *image_in, float exposure_time, float factor);
+
 
 	//! 光度畸变类 结束， 畸变基类开始
 	//! --------------------------  分割线  -----------------------------------------
@@ -295,12 +302,12 @@ namespace dso
 	/**
 	 * @brief 从传入的内参文件、矫正文件中建立相机去畸变模型，最后返回一个去畸变的类指针
 	 *          注意如果没有光度矫正文件，传入的就是一个空字符串
-	 * @param[in] configFilename 
-	 * @param[in] gammaFilename 
-	 * @param[in] vignetteFilename 
-	 * @return Undistort*  相机矫正基类指针，注意内部会根据不同的派生类调用派生类的方法，这也就是多态
+	 * @param[in] configFilename    相机内参畸变校正文件
+	 * @param[in] gammaFilename     相机非线性响应文件，一行，把[0-256]映射成某些数值
+	 * @param[in] vignetteFilename  渐晕图像
+	 * @return Undistort*  相机矫正基类指针，注意内部会根据不同的派生类(不同相机模型)调用派生类的方法，这也就是多态
 	 */
-	Undistort *Undistort::getUndistorterForFile(std::string configFilename, std::string gammaFilename, std::string vignetteFilename)
+	Undistort* Undistort::getUndistorterForFile(std::string configFilename, std::string gammaFilename, std::string vignetteFilename)
 	{
 		printf("Reading Calibration from file %s", configFilename.c_str());
 		std::ifstream f(configFilename.c_str());
@@ -313,12 +320,12 @@ namespace dso
 		}
 		printf(" ... found!\n");
 		std::string l1;
-		std::getline(f, l1);
+		std::getline(f, l1);  //; 读取畸变文件中的第一行到字符串l1中
 		f.close();
 		float ic[10];
 
-		// Step 1 相机几何畸变模型
-		Undistort *u; // 矫正基类, 作为返回值, 其他的类型继承自它
+		// Step 1 校正相机几何畸变
+		Undistort* u; // 矫正基类, 作为返回值, 其他的类型继承自它
 
 		//* 下面三种具体模型, 是针对没有指明模型名字的, 只给了参数
 		//; 为了向后兼容？什么意思？
@@ -431,6 +438,8 @@ namespace dso
 
 		// Step 2 相机光度标定参数：包括非线性仿射变换和图像渐晕
 		// 读入相机的光度标定参数
+        //; 注意这里的函数调用，是利用上面创建的几何畸变类，去生成光度畸变类。
+        //;  就相当于以几何畸变类为主体，内部包含了光度畸变类
 		u->loadPhotometricCalibration(gammaFilename, "", vignetteFilename);
 
 		return u;
@@ -449,11 +458,11 @@ namespace dso
 	 * @param[in] image_raw  从数据集中读取出来的原始的输入图像
 	 * @param[in] exposure   从数据集中读取出来的曝光时间
 	 * @param[in] timestamp  时间戳
-	 * @param[in] factor     什么参数？默认是1
+	 * @param[in] factor     什么参数？默认实参是1
 	 * @return ImageAndExposure*  去掉光度之后的辐照和曝光时间组成的图像
 	 */
 	template <typename T>
-	ImageAndExposure *Undistort::undistort(const MinimalImage<T> *image_raw, float exposure, double timestamp, float factor) const
+	ImageAndExposure* Undistort::undistort(const MinimalImage<T> *image_raw, float exposure, double timestamp, float factor) const
 	{
 		if (image_raw->w != wOrg || image_raw->h != hOrg)
 		{
@@ -463,6 +472,7 @@ namespace dso
 
 		// Step 1 使用光度畸变类去除光度参数的影响：去掉gamma响应、渐晕，结果保存到类成员变量ImageAndExposure指针中
 		//; 注意：这个是对 输入图像 进行整个去光度畸变操作
+        //;  该函数执行结束后：它的类成员变量中直接存储了t*B, 以及曝光时间t
 		photometricUndist->processFrame<T>(image_raw->data, exposure, factor); // 去除光度参数影响
 		ImageAndExposure *result = new ImageAndExposure(w, h, timestamp);
 		photometricUndist->output->copyMetaTo(*result); // 只复制了曝光时间
@@ -473,7 +483,7 @@ namespace dso
 		{
 			//; 这里是指针赋值，所以操作out_data就相当于操作result->image
 			float *out_data = result->image; // 复制的图像做输出
-			//; 注意这个in_data实际是上面的去光度畸变之后的图像
+			//; 注意这个in_data实际是上面的去光度畸变之后的图像，也就是t*B
 			float *in_data = photometricUndist->output->image; // 输入图像
 
 			//[ ***step 2*** ] 如果定义了噪声值, 设置随机几何噪声大小, 并且添加到输出图像
@@ -700,8 +710,9 @@ namespace dso
 			tgY[x] = 0;
 		}
 		//; 注意：对于自己下载的dso的几个数据集(sequence 1 19 42)应该都是FOV模型，所以这里对应就是FOV子类的函数
-		distortCoordinates(tgX, tgY, tgX, tgY, 100000); // 矫正
-		for (int x = 0; x < 100000; x++)
+		distortCoordinates(tgX, tgY, tgX, tgY, 100000); // 加畸变
+		
+        for (int x = 0; x < 100000; x++)
 		{
 			//; 从小到大遍历，只要图像落在原图像内，那么就更新minX和maxX
 			if (tgX[x] > 0 && tgX[x] < wOrg - 1)
@@ -732,9 +743,9 @@ namespace dso
 		delete[] tgY;
 
 		//! 问题：什么操作？
-		//! 解答：这个应该是再稍微放宽一点这个边界位置，注意maxX和Y都是*1.01很好理解，为什么minX和Y也是*1.01，感觉
-		//!   不应该是乘以一个<1的数吗？比如0.99。其实是因为minX和minY都是<0的，如果想要放大图像范围，应该让他们
-		//!   负数变得更加负，所以就是扩大负数的绝对值，也就是应该乘以>1的数而不是
+		//; 解答：这个应该是再稍微放宽一点这个边界位置，注意maxX和Y都是*1.01很好理解，为什么minX和Y也是*1.01，感觉
+		//;   不应该是乘以一个<1的数吗？比如0.99。其实是因为minX和minY都是<0的，如果想要放大图像范围，应该让他们
+		//;   负数变得更加负，所以就是扩大负数的绝对值，也就是应该乘以>1的数而不是
 		minX *= 1.01;
 		maxX *= 1.01;
 		minY *= 1.01;
@@ -841,9 +852,11 @@ namespace dso
 	}
 
 	/**
-	 * @brief   从参数文件中读取相机内参和畸变模型，建立输出图像和输入图像像素对应关系，
-	 *          并且计算 输出图像 和 有效归一化平面 范围之间的投影参数矩阵
-	 * 
+	 * @brief   从参数文件中读取相机内参和畸变模型，主要就是两个步骤：
+     *     1. 计算 输出图像 和 有效归一化平面 范围之间的投影参数矩阵，存到类成员变量 K 中
+     *     2. 建立输出图像和输入图像像素对应关系，存到类成员变量 remapX/Y 中
+	 *  该函数也比较有意思，它是基类中的函数，但是在其中调用了派生类的函数(也就是基类中的虚函数)，
+     *  从而针对不同类型的相机畸变模型进行了校正
 	 * @param[in] configFileName   图像内参文件名称
 	 * @param[in] nPars   相机内参的参数个数，5个或者8个
 	 * @param[in] prefix 
@@ -1134,8 +1147,13 @@ namespace dso
 		std::cout << K << "\n\n";
 	}
 
-	//? ------  对于不同的相机模型畸变不同，下面派生类继承 畸变基类，进行各自的畸变计算
-	//********************* 以下都是加畸变的算法 *******************************
+
+	/**
+	 * @brief 相机几何畸变模型的构造函数，注意在这个构造函数中调用readFromFile就完成了相机几何畸变校正
+	 * 
+	 * @param[in] configFileName 
+	 * @param[in] noprefix 
+	 */
 	UndistortFOV::UndistortFOV(const char *configFileName, bool noprefix)
 	{
 		printf("Creating FOV undistorter\n");
@@ -1150,6 +1168,8 @@ namespace dso
 	{
 	}
 
+
+    //********************* 以下都是加畸变的算法 *******************************
 	// FOV加畸变：dso的数据集中最常用到的！
 	void UndistortFOV::distortCoordinates(float *in_x, float *in_y, float *out_x, float *out_y, int n) const
 	{
@@ -1157,12 +1177,13 @@ namespace dso
 		float d2t = 2.0f * tan(dist / 2.0f);
 
 		// current camera parameters
+        //; 输入图像 到 有效归一化平面 之间的投影矩阵，即真实的相机内参
 		float fx = parsOrg[0];
 		float fy = parsOrg[1];
 		float cx = parsOrg[2];
 		float cy = parsOrg[3];
 
-		//; 这个时候K应该还是单位阵啊？
+		//; 输出图像 到 有效归一化平面 之间的投影矩阵，也就是我们利用输出图像大小计算的虚拟的相机内参
 		float ofx = K(0, 0); // 1
 		float ofy = K(1, 1); // 1
 		float ocx = K(0, 2); // 0

@@ -345,7 +345,8 @@ void parseArgument(char *arg)
 		if (option == 1)
 		{
 			printf("PHOTOMETRIC MODE WITHOUT CALIBRATION!\n");
-			setting_photometricCalibration = 0; //; 配置不进行光度矫正
+            //; 有没有输入的gamma文件(=0则没有)，它描述了非线性的响应函数G 
+			setting_photometricCalibration = 0; 
 			setting_affineOptModeA = 0;			//-1: fix. >=0: optimize (with prior, if > 0).
 			setting_affineOptModeB = 0;			//-1: fix. >=0: optimize (with prior, if > 0).
 		}
@@ -368,20 +369,26 @@ int main(int argc, char **argv)
 	//setlocale(LC_ALL, "");
 	// Step 1 ：读取命令行运行时的输入参数
 	for (int i = 1; i < argc; i++)
-		parseArgument(argv[i]);
+    {
+		parseArgument(argv[i]);  //; 这个命名，跟Python是多么的像啊！
+    }
 
 	// hook crtl+C.
 	boost::thread exThread = boost::thread(exitThread);
 
-	// Step 2 ：读取相机参数文件，在构造函数中执行两个步骤：
-	//; 1. 根据相机参数建立相机畸变模型  2.根据光度参数得到非线性仿射函数G、镜头渐晕
+	// Step 2 ：读取相机参数文件，在构造函数中执行3个步骤：
+	//; 1. 根据相机参数建立相机畸变模型  2.根据光度参数得到非线性仿射函数G、镜头渐晕  3.如果有曝光时间，则读取曝光时间
 	ImageFolderReader *reader = new ImageFolderReader(source, calib, gammaCalib, vignette);
-	//; 2.这里github上readme中作者说了，需要在初始化之前设置相机内参和视频分辨率，虽然可能不是最方便的方式
+	
+    // Step 2.1 由于上面都是把变量读到了ImageFolderReader 或者 Undistort类中了，但是为了后边使用方便这里还要设置到全局变量中
+    //! 其实很简单，就是根据输出图像大小判断可以建立的图像金字塔层数，并且计算各个层的相机内参、图像宽度，然后赋值给全局变量
+    //!  也就是说这个地方就是在计算相机内参相关的内容
+    //; 2.这里github上readme中作者说了，需要在初始化之前设置相机内参和视频分辨率，虽然可能不是最方便的方式
 	//;  2.1. 根据上面的图像去畸变类，得到输出图像的宽、高、投影矩阵
 	//;  2.2. 计算能够构成的图像金字塔，并且计算各层的宽、高、投影矩阵
-	reader->setGlobalCalibration();
+	reader->setGlalCalibration();
 
-	//; 1.前面的setting_photometricCalibration是2，可以认为是代码要求进行gamma和渐晕矫正？
+	//; 1.前面的setting_photometricCalibration是2，可以认为有输入的gamma校正文件
 	//; 2.后面的参数表示是否有gamma矫正的文件，如果没有这个文件，你还要求使用光度矫正，那么这里就报错退出
 	if (setting_photometricCalibration > 0 && reader->getPhotometricGamma() == 0)
 	{
@@ -406,19 +413,22 @@ int main(int argc, char **argv)
 
 	// Step 3 new一个系统类
 	FullSystem *fullSystem = new FullSystem();
-	//! 设置非线性响应函数，注意其中会给类成员变量 Hcalib 赋值
+	// 设置非线性响应函数，注意其中会给类成员变量 Hcalib 赋值
+    //; 把Undistort类中的非线性响应函数拷贝给Hcali，也就是相机内参这个类，后面就只会使用这个类参与运算了
 	fullSystem->setGammaFunction(reader->getPhotometricGamma()); //; 设置非线性响应函数
 	fullSystem->linearizeOperation = (playbackSpeed == 0);		 //; 如果=0，不强制实时执行
 
 	IOWrap::PangolinDSOViewer *viewer = 0;
+    //; 如果开启gui显示的话，那么就new一个显示的类
 	if (!disableAllDisplay)
 	{
 		viewer = new IOWrap::PangolinDSOViewer(wG[0], hG[0], false);
-		fullSystem->outputWrapper.push_back(viewer);
+		fullSystem->outputWrapper.push_back(viewer);  //; 把这个显示的类fullSystem中
 	}
-
 	if (useSampleOutput)
+    {
 		fullSystem->outputWrapper.push_back(new IOWrap::SampleOutputWrapper());
+    }
 
 	// Step 4 运行线程
 	// to make MacOS happy: run this in dedicated thread -- and use this one to run the GUI.
@@ -439,7 +449,7 @@ int main(int argc, char **argv)
 				{
 					double tsThis = reader->getTimestamp(idsToPlay[idsToPlay.size() - 1]);
 					double tsPrev = reader->getTimestamp(idsToPlay[idsToPlay.size() - 2]);
-					//; 可以看到这个时间值得是程序什么时刻处理下一张图片的时间，因为最后/playbackSpeed，可以倍速播放
+					//; 可以看到这个时间指的是程序什么时刻处理下一张图片的时间，因为最后/playbackSpeed，可以倍速播放
 					timesToPlayAt.push_back(timesToPlayAt.back() + fabs(tsThis - tsPrev) / playbackSpeed);
 				}
 			}
@@ -454,6 +464,13 @@ int main(int argc, char **argv)
 				{
 					int i = idsToPlay[ii];
 					//; 读取图像：去光度畸变和几何畸变，得到输出图像size的辐照图ImageAndExposure
+                    /**
+                     * @brief 下面的操作步骤可以分为两步：
+                     *  1. 根据前面光度校正类计算的gamma响应、渐晕，对输入图像去掉这些光度畸变，得到t*B，曝光时间t本来就是文件输入的
+                     *  2. 但是上面的是对输入图像去光度畸变，我们最后用的还是输出图像，所以还需要进行去几何畸变。做法就是使用
+                     *     前面计算的输出图像和输入图像的像素匹配关系，把上面计算的输入图像的去光度畸变结果存到输出图像中，也就是
+                     *     把输出图像的t*B存到ImageAndExposure.image中，曝光时间t存到ImageAndExposure.exposure_time中                  * 
+                     */
 					preloadedImages.push_back(reader->getImage(i));
 				}
 			}
@@ -473,7 +490,7 @@ int main(int argc, char **argv)
 					sInitializerOffset = timesToPlayAt[ii]; //; 计算的播放的每一帧相对以第一帧的播放时间偏置
 				}
 
-				int i = idsToPlay[ii]; //; i就是要处理的图像在数据集文件夹中的索引
+				int i = idsToPlay[ii]; //; 要处理的图像在数据集文件夹中的索引
 
 				//; 如果上面已经提前把所有图像都读取进来了，那么直接从存储的变量中拿出来一张图像即可
 				ImageAndExposure *img;
@@ -503,10 +520,13 @@ int main(int argc, char **argv)
 
 				//! 重要：DSO系统的入口函数！
 				if (!skipFrame)
+                {
 					fullSystem->addActiveFrame(img, i); //; i就是要处理的图像在数据集文件夹中的索引
+                }
+				delete img;  //; 这帧跟踪完成，不管是关键帧还是非关键帧，输入的t*B都用不到了，所以直接删掉就行了
 
-				delete img;
-
+                //; setting_fullResetRequested默认是false, 但是有可能会改变
+                //; 如果系统初始化失败了，则重新new一个fullSystem这个类，重新来过
 				if (fullSystem->initFailed || setting_fullResetRequested)
 				{
 					if (ii < 250 || setting_fullResetRequested)
@@ -529,12 +549,14 @@ int main(int argc, char **argv)
 					}
 				}
 
+                //; 如果跟丢了，那直接就是break，后面的所有图像都不会再跟踪了，丢了整个系统就玩儿完了
 				if (fullSystem->isLost)
 				{
 					printf("LOST!!\n");
 					break;
 				}
 			} // 结束，整个数据集的所有图像都跟踪完毕，输出最终结果
+
 
 			fullSystem->blockUntilMappingIsFinished();
 			clock_t ended = clock();
@@ -570,14 +592,17 @@ int main(int argc, char **argv)
 				tmlog.close();
 			}
 		});
-
+    
+    //; 如果有pangolin的显示对象，那么这里显示线程也要正常运行
 	if (viewer != 0)
 		viewer->run();
 
 	runthread.join();
 
+    //; 这里很有意思，可以生成多个输出对象，然后加入到fullSystem中
 	for (IOWrap::Output3DWrapper *ow : fullSystem->outputWrapper)
 	{
+        //; 这里先join，后delete，到底是在加入还是在删除？
 		ow->join();
 		delete ow;
 	}

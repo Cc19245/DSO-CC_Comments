@@ -214,7 +214,14 @@ namespace dso
 	{
 	}
 
+
 	//* 设置相机响应函数
+    /**
+     * @brief BInv到底是响应函数G还是响应函数的逆变换G^-1？
+     *  妈的，为什么要弄两个名字啊？又是B又是G的
+     * 
+     * @param[in] BInv 
+     */
 	void FullSystem::setGammaFunction(float *BInv)
 	{
 		if (BInv == 0)
@@ -243,6 +250,7 @@ namespace dso
 		Hcalib.B[0] = 0;
 		Hcalib.B[255] = 255;
 	}
+
 
 	void FullSystem::printResult(std::string file)
 	{
@@ -879,12 +887,19 @@ namespace dso
                     // CC : 空，这个else是自己加的，为了代码更加规范
                     //! 疑问：万一上面两个都不满足呢？进来这个分支咋办？
                     //TODO： 这里看看有没有可能会进来这个分支
+                    //! 7.29增：
+                    //; CC解答：其实这个分支就是什么都不干，因为上面是判断了边缘化或者丢掉的点，然后对他们进行处理。
+                    //;   如果经过判断这个点不属于被边缘化的点或者被删除的点，那么它就是继续存在于滑窗中的点，所以
+                    //;   不需要进行任何处理。
                 }
 			} //!  -----------  遍历这个关键帧持有的所有点结束  ---------------------
 
 			//* 删除边缘化或者删除的点
             //; 靠，放在上面哪个循环里不好吗？先用一个变量把帧上所有的点的pointHessians[]的size读出来，
-            //; 然后就可以遍历了啊？
+            //;    然后就可以遍历了啊？
+            //; CC解答：感觉就是写法的原因，因为这里弹出点需要pop_back,放在上面的话尽管可以一开始就把size
+            //;    读出来，但是过程中一直在pop，所以最后也不知道到底size是多少了。
+            //;    但是好像既然在pop，那么每次使用size访问就正好？anyway，无伤大雅
 			for (int i = 0; i < (int)host->pointHessians.size(); i++)
 			{
 				if (host->pointHessians[i] == 0)
@@ -915,8 +930,9 @@ namespace dso
 		// =========================== add into allFrameHistory =========================
 		FrameHessian *fh = new FrameHessian(); //; 包含了大部分的内容，比如H、状态
 		FrameShell *shell = new FrameShell();  //; Frame的简化，位姿等变量
-		shell->camToWorld = SE3();			   // no lock required, as fh is not used anywhere yet.
-		shell->aff_g2l = AffLight(0, 0);	   //; 光度变化系数a, b
+		//; 下面这个无用，在上面构造函数中就已经设置了
+        shell->camToWorld = SE3();			   // no lock required, as fh is not used anywhere yet.
+		shell->aff_g2l = AffLight(0, 0);	   //; 绝对光度系数a, b
 		shell->marginalizedAt = shell->id = allFrameHistory.size();  //; shell->id是真正处理的帧的序号
 		shell->timestamp = image->timestamp;
 		shell->incoming_id = id; //; 这个id是图像在数据集文件夹中的序号
@@ -1012,7 +1028,9 @@ namespace dso
 			}
 
 			for (IOWrap::Output3DWrapper *ow : outputWrapper)
+            {
 				ow->publishCamPose(fh->shell, &Hcalib);
+            }
 
 			// Step 7 把该帧发布出去
 			lock.unlock();
@@ -1049,7 +1067,9 @@ namespace dso
 				lastRefStopID = coarseTracker->refFrameID;
 			}
 			else
+            {
 				handleKey(IOWrap::waitKey(1));
+            }
 
 			//; 根据输入的帧是不是关键帧，对其进行不同的处理	
 			if (needKF)
@@ -1197,7 +1217,8 @@ namespace dso
 			boost::unique_lock<boost::mutex> crlock(shellPoseMutex);
 			assert(fh->shell->trackingRef != 0);
 			fh->shell->camToWorld = fh->shell->trackingRef->camToWorld * fh->shell->camToTrackingRef;
-			fh->setEvalPT_scaled(fh->shell->camToWorld.inverse(), fh->shell->aff_g2l); // 待优化值
+			//! 重点：之前一直在找最新的关键帧的线性化点是如何设置的，就是在这里！
+            fh->setEvalPT_scaled(fh->shell->camToWorld.inverse(), fh->shell->aff_g2l); // 待优化值
 		}
 
 		// Step 1 和非关键帧一样，利用当前帧对前面关键帧中的未成熟点进行逆深度更新
@@ -1327,11 +1348,14 @@ namespace dso
         flagPointsForRemoval();
         //; 上面的函数中，会边缘化或丢掉一些点，但是函数里只是设置了后端能量点的标志，并没有实际删除，
         //;  所以这里还要手动调用一下后端函数删除这些能量点
+        //! 7.29增：从功能上来说，我觉得实际把这个函数放到flagPointsForRemoval函数最后更好，
+        //! 并且此函数命名也不准确，命名为MarginOrDropPoints更好，即边缘化或者丢掉点。同理把下面的marginalizePointsF
+        //! 函数也一并放进里面调用，实际就完成了整个点的边缘化。这样拆开反而没有逻辑。
 		ef->dropPointsF();   // 扔掉drop的点
         // Step 9.2 更新零空间
         // 每次设置线性化点都会更新零空间
-		getNullspaces(
-			ef->lastNullspaces_pose,
+		getNullspaces(_
+			ef->lastNullspacespose,
 			ef->lastNullspaces_scale,
 			ef->lastNullspaces_affA,
 			ef->lastNullspaces_affB);
@@ -1393,7 +1417,7 @@ namespace dso
 		// Step 1.1. 一些变量的初始化
 		FrameHessian *firstFrame = coarseInitializer->firstFrame; // 第一帧增加进地图
 		//; frameHessians是一个FrameHessian的Vector，加入Vector中
-		firstFrame->idx = frameHessians.size();	  // 赋值给它id (0开始)
+		firstFrame->idx = frameHessians.size();	  //; 在滑窗中的所有关键帧的索引
 		frameHessians.push_back(firstFrame);	  // 地图内关键帧容器
 		firstFrame->frameID = allKeyFramesHistory.size();	// 所有历史关键帧id
 		allKeyFramesHistory.push_back(firstFrame->shell);   // 所有历史关键帧
@@ -1401,8 +1425,7 @@ namespace dso
 		// Step 1.2. 把第1帧加入优化，即加入能量方程，其中会遍历滑窗中的所有能量帧，计算伴随矩阵
 		ef->insertFrame(firstFrame, &Hcalib);   //; 当前帧和相机内参 加入能量方程
 		
-		// Step 1.3. 
-		//! 疑问：全程没看懂这个函数里面在干什么？
+		// Step 1.3. 设置预计算值，包括线性化点、最新帧状态，以及最新帧状态相对线性化点的状态增量
 		// 建立所有帧的目标帧，并且进行主导帧和目标帧之间相对状态的预计算
 		setPrecalcValues(); // 设置相对位姿预计算值
 
@@ -1432,12 +1455,14 @@ namespace dso
 		float keepPercentage = setting_desiredPointDensity / coarseInitializer->numPoints[0];
 
 		if (!setting_debugout_runquiet)
+        {
 			printf("Initialization: keep %.1f%% (need %d, have %d)!\n", 100 * keepPercentage,
 				   (int)(setting_desiredPointDensity), coarseInitializer->numPoints[0]);
+        }
 
 		// Step 3  创建PointHessian, 点加入关键帧, 加入EnergyFunctional
-		//; 将第一帧的未成熟点生成PointHessian，并且设置PointHessian的相关参数，存储到第一帧的容器pointHessians中，
-		//;  然后利用insertPoint()加入到后端优化中
+		//; 将第一帧的未成熟点生成PointHessian，并且设置PointHessian的相关参数，
+		//;  存储到第一帧的容器pointHessians中，然后利用insertPoint()加入到后端优化中
 		for (int i = 0; i < coarseInitializer->numPoints[0]; i++)
 		{
 			// RAND_MAX 就是 int_max，即int整数的最大值（24...多少）
@@ -1458,12 +1483,14 @@ namespace dso
 			} // 点值无穷大，有问题，直接删除这个点
 
 			// 创建ImmaturePoint就为了创建PointHessian? 是为了接口统一吧
+            //; CC：是的，看下面把未成熟点丢掉了，因为PointHessian只能由ImmaturePoint构造
 			pt->idepth_max = pt->idepth_min = 1;  //; 未成熟的点的逆深度最大最小值都设置成1
 
 			//; 构造未成熟的点的时候，其构造函数内部会计算点的权重
 			PointHessian *ph = new PointHessian(pt, &Hcalib);  //; 利用未成熟的点构造PointHessain，即地图点
-			delete pt;
-			if (!std::isfinite(ph->energyTH))
+			delete pt;  //; 把未成熟点丢掉了，其实可以看出来，未成熟点就是为了构造成熟点用的，因为PointHessian只能由ImmaturePoint构造
+			
+            if (!std::isfinite(ph->energyTH))
 			{
 				delete ph;
 				continue;
@@ -1474,12 +1501,14 @@ namespace dso
 			ph->setIdepthScaled(point->iR * rescaleFactor); //? 为啥设置的是scaled之后的
 
 			//; 一篇博客中的注释：用到FEJ中，暂时超纲
-			ph->setIdepthZero(ph->idepth);	 //! 设置初始先验值, 还有神奇的求零空间方法
-			
-			ph->hasDepthPrior = true;  //; 设置这个点有深度先验
+            //; 7.29: 这里就是设置逆深度的线性化点，实际上后面可以看到逆深度的线性化点没有固定，每次都是用最新的状态
+			ph->setIdepthZero(ph->idepth);	 
+
+            //; 设置这个点有深度先验，因为整个系统第一帧的位姿、逆深度都是有先验的，这个先验就是初始化计算出来的
+			ph->hasDepthPrior = true;  
 			ph->setPointStatus(PointHessian::ACTIVE); // 激活点
 
-			//; 把PointHessian加入FrameHessain中
+			//; 把PointHessian加入FrameHessain的点数组中
 			firstFrame->pointHessians.push_back(ph);
 
 			// 利用insertPoint()加入到后端优化中
@@ -1487,7 +1516,8 @@ namespace dso
 		}
 
 		// Step 4  设置第一帧和最新帧的待优化量, 参考帧
-		//; 通过前面所有帧对第一帧的track以及optimization得到第一帧到第八帧的位姿：firstToNew，并对平移部分利用尺度因子进行处理
+		//; 通过前面所有帧对第一帧的track以及optimization得到第一帧到第八帧的位姿：firstToNew，
+        //;  并对平移部分利用尺度因子进行处理
 		SE3 firstToNew = coarseInitializer->thisToNext;  //; 当前帧相对第一帧的位姿
 		firstToNew.translation() /= rescaleFactor;  //; 平移部分也要缩放这个尺度
 
@@ -1497,17 +1527,20 @@ namespace dso
 			//   在选取位移比较大的第一帧以后，再往后运行5帧。CC：这个地方说的明显不对
 			// 2.设置第一帧和第八帧的相关参数。 CC：这个感觉说的才是对的
 			boost::unique_lock<boost::mutex> crlock(shellPoseMutex);
+
+            //; 整个系统第一帧肯定就是世界坐标系，这个没什么问题
 			firstFrame->shell->camToWorld = SE3(); // 空的初值?
 			firstFrame->shell->aff_g2l = AffLight(0, 0);
-			firstFrame->setEvalPT_scaled(firstFrame->shell->camToWorld.inverse(), firstFrame->shell->aff_g2l);
 			firstFrame->shell->trackingRef = 0;
 			firstFrame->shell->camToTrackingRef = SE3();
+            firstFrame->setEvalPT_scaled(firstFrame->shell->camToWorld.inverse(), firstFrame->shell->aff_g2l);
 
 			newFrame->shell->camToWorld = firstToNew.inverse();
 			newFrame->shell->aff_g2l = AffLight(0, 0);
-			newFrame->setEvalPT_scaled(newFrame->shell->camToWorld.inverse(), newFrame->shell->aff_g2l);
 			newFrame->shell->trackingRef = firstFrame->shell;
 			newFrame->shell->camToTrackingRef = firstToNew.inverse();
+            //! 重要：设置最新的这一帧的位姿的线性化点
+            newFrame->setEvalPT_scaled(newFrame->shell->camToWorld.inverse(), newFrame->shell->aff_g2l);
 		}
 		
 		//; 至此初始化已经成功了，接下的操作是将第八帧作为关键帧进行处理。

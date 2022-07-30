@@ -200,11 +200,11 @@ namespace dso
 			for (int i = 0; i < numSparsePoints; i++)
 			{
 				/* display modes:
-		 * my_displayMode==0 - all pts, color-coded
-		 * my_displayMode==1 - normal points
-		 * my_displayMode==2 - active only
-		 * my_displayMode==3 - nothing
-		 */
+                * my_displayMode==0 - all pts, color-coded
+                * my_displayMode==1 - normal points
+                * my_displayMode==2 - active only
+                * my_displayMode==3 - nothing
+                */
 
 				if (my_displayMode == 1 && originalInputSparse[i].status != 1 && originalInputSparse[i].status != 2)
 					continue;

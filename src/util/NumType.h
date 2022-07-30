@@ -156,9 +156,15 @@ namespace dso
 		AffLight() : a(0), b(0){};
 
 		// Affine Parameters:
-		//! 光度矫正后(tB) I_frame = exp(a)*I_global + b.
-		//! 辐照度(B) I_global = exp(-a)*(I_frame - b).
+        //; 注意下面的注释是什么意思，就是说经过光度校正之后(去除渐晕)，所得到的像素值I_frame，所以下面说是tB应该是不对的。
+        //; 然后如果考虑非线性响应函数的话，它根据原来的t*B，即时间*辐照(漫反射的不变量)根据我们对非线性响应函数的建模得到
+        //;  当前的I_frame，即为下面的公式I_frame = exp(a)*I_global + b.  然后最终我们代码中求残差使用的应该是这个B是
+        //;  不变的，也就是我们应该用I_global，所以要反向去掉这个非线性响应函数。
+        //! 疑问：但是这里I_global应该是t*B啊？他把曝光时间搞到哪里去了？
+		// 光度矫正后(tB) I_frame = exp(a)*I_global + b.
+		// 辐照度(B) I_global = exp(-a)*(I_frame - b).
 		double a, b;
+
 
 		/********************************
 		 * @ function: 把光度仿射变换转化为, 能量函数中的整体光度仿射系数
@@ -169,16 +175,24 @@ namespace dso
 		 * @			g2T				目标帧光度仿射系数
 		 * @ note:	注意这里面的a,b之间的差别
 		 *******************************/
+        //; 把两帧的绝对光度系数，转成两帧之间的相对光度系数，因为后面求雅克比都是对相对光度系数求雅克比
 		static Vec2 fromToVecExposure(float exposureF, float exposureT, AffLight g2F, AffLight g2T)
 		{
 			// 没有曝光时间标定, 置1
+            //! 疑问；如果没有标定曝光时间，那么曝光时间就默认是1。注意这个1是没有单位的，相当于说所有帧的曝光
+            //!   时间都是一样的。这个怎么理解呢？
+            //; 7.30增：我感觉大概意思是，此时我就把曝光时间融合到a/b中了？因为其实本来使用a/b建模响应函数也是使用
+            //;        的线性模型，而曝光时间在恢复B的时候是除在分母上的，所以完全可以归结于e^-a这个位置作为一个比例系数？
 			if (exposureF == 0 || exposureT == 0)
 			{
 				exposureT = exposureF = 1;
 				//printf("got exposure value of 0! please choose the correct model.\n");
 				//assert(setting_brightnessTransferFunc < 2);
 			}
+
 			// 论文公式(4), 光度系数放一起
+            //; 这个地方就是深蓝PPT P6下面那张PPT，就是把相对光度系数和绝对光度系数放到了一起。
+            //; 然后这里的T就是j，可认为是Target帧；F就是i，可认为是Host帧。注意后面的exposureT/F就是曝光时间
 			double a = exp(g2T.a - g2F.a) * exposureT / exposureF;
 			double b = g2T.b - a * g2F.b;
 			return Vec2(a, b);

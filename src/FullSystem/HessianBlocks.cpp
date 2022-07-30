@@ -133,7 +133,7 @@ namespace dso
 	/**
 	 * @brief  计算当前帧图像的各层金字塔图像的像素值和梯度
 	 * 
-	 * @param[in] color   传入的经过广度校正后的图像辐照值
+	 * @param[in] color   传入的经过光度校正后的图像辐照值
 	 * @param[in] HCalib  相机内参hessian
 	 */
 	void FrameHessian::makeImages(float *color, CalibHessian *HCalib)
@@ -171,7 +171,7 @@ namespace dso
 			Eigen::Vector3f *dI_l = dIp[lvl];  // 当前层图像的Vector3d值
 			float *dabs_l = absSquaredGrad[lvl];  // 当前层图像的梯度平方和
 
-			// Step 1 : 计算各层的像素值，只要不是第0层的金字塔（即输出图像），也就是生成第1层向上的那些金字塔的像素值
+			// Step 1 : 计算第0层之上的各层的像素值，要用下层图像梯度值4合1求平均来计算
 			if (lvl > 0)
 			{
 				int lvlm1 = lvl - 1;  //; 当前层图像的下一层索引
@@ -193,7 +193,7 @@ namespace dso
 				}
 			}
 
-			// Step 2 : 计算各层的梯度值
+			// Step 2 : 计算各层的梯度值，前面像素值都已经求完了，所以这里每层都可以算梯度
 			for (int idx = wl; idx < wl * (hl - 1); idx++) // 注意从第二行的像素开始算
 			{
 				// 梯度的求取：利用前后两个像素的差值作为x方向的梯度，
@@ -218,7 +218,11 @@ namespace dso
 					//! 乘上响应函数, 变换回正常的颜色, 因为光度矫正时 I = G^-1(I) / V(x)
 					float gw = HCalib->getBGradOnly((float)(dI_l[idx][0]));
 					//; 这里把梯度恢复成像素梯度，也就是在去除光度响应函数之前的值
-					dabs_l[idx] *= gw * gw; // convert to gradient of original color space (before removing response).
+                    // convert to gradient of original color space (before removing response).
+                    //; 这里有点意思，看这个变量的命名可以知道他说的是像素选择的时候的配置，这里也只是修改了像素梯度的平方
+                    //; 并没有对像素梯度从辐照值变成像素值。
+                    //TODO 看看像素梯度的平方在哪里使用了？为什么要这样设置？
+					dabs_l[idx] *= gw * gw; 
 				}
 			}
 		}

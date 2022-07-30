@@ -33,6 +33,7 @@ namespace dso
 	{
 	public:
 		EIGEN_MAKE_ALIGNED_OPERATOR_NEW;
+        //! 注意这个值应该是深蓝PPT P5中的t*B, 也就是内部是包含曝光时间的
 		float *image;		 // irradiance. between 0 and 256
 		int w, h;			 // width and height;
 		double timestamp;	 // 图像的时间戳

@@ -113,6 +113,7 @@ namespace dso
 		//DepthImageWrap* frame;
 		FrameShell *shell; //!< 帧的"壳", 保存一些不变的,要留下来的量
 
+        //; 注意下面dI和dIp的区别：dIp是各层图像梯度指针的数组，而dI=dIp[0]就是金字塔第0层图像的图像梯度指针
 		//* 图像导数[0]:辐照度  [1]:x方向导数  [2]:y方向导数, （指针表示图像）
 		Eigen::Vector3f *dI;			   //!< 图像导数  // trace, fine tracking. Used for direction select (not for gradient histograms etc.)
 		Eigen::Vector3f *dIp[PYR_LEVELS];  //!< 各金字塔层的图像导数  // coarse tracking / coarse initializer. NAN in [0] only.
@@ -284,10 +285,10 @@ namespace dso
 		};
 		inline FrameHessian()
 		{
-			instanceCounter++; //! 若是发生拷贝, 就不会增加了
+			instanceCounter++;   //! 若是发生拷贝, 就不会增加了
 			flaggedForMarginalization = false;
-			frameID = -1;
-			efFrame = 0;
+			frameID = -1;  //; 在整个历史帧中的ID
+			efFrame = 0;   //; 对应的后端EFFrame的指针置零
 			frameEnergyTH = 8 * 8 * patternNum;
 
 			debugImage = 0;
@@ -437,6 +438,7 @@ namespace dso
 		};
 
 		//* gamma函数, 相机的响应函数G和G^-1, 映射到0~255
+        //! 妈的，到底哪个是G，哪个是G^-1啊？
 		float Binv[256];
 		float B[256];
 
@@ -545,7 +547,10 @@ namespace dso
 
 		//@ 判断其它帧上的点是否不值得要了
         /**
-         * @brief 
+         * @brief  在进行完本次的滑窗优化之后，判断需要边缘化的点的时候被调用。
+         *   1.显然即将被边缘化的帧上的点肯定是不能继续显式的存在的，因此要么被边缘化掉，要么被丢掉。
+         *   2.而滑窗中的其他关键帧上的点也有可能不能继续显式的存在，因此也要根据某些策略把这些点选择出来，
+         *     也边缘化掉或者丢掉，本函数就是对这些点进行选择。
          * 
          * @param[in] toKeep  没使用
          * @param[in] toMarg  要边缘化掉的关键帧的数组

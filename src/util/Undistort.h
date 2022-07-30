@@ -73,6 +73,7 @@ namespace dso
 		EIGEN_MAKE_ALIGNED_OPERATOR_NEW;
 		virtual ~Undistort();
 
+        //; 多态：声明虚函数，这样由不同的相机模式实现不同的逻辑处理
 		virtual void distortCoordinates(float *in_x, float *in_y, float *out_x, float *out_y, int n) const = 0;
 
 		inline const Mat33 getK() const { return K; };
@@ -87,6 +88,7 @@ namespace dso
 
 		void loadPhotometricCalibration(std::string file, std::string noiseImage, std::string vignetteImage);
 
+        //; 光度畸变类
 		PhotometricUndistorter *photometricUndist; // 光度矫正类
 
 	protected:
@@ -111,6 +113,7 @@ namespace dso
 		void makeOptimalK_crop();
 		void makeOptimalK_full();
 
+        // 基类的函数，会在内部调用派生类的成员函数实现功能
 		void readFromFile(const char *configFileName, int nPars, std::string prefix = "");
 	};
 
