@@ -1,8 +1,22 @@
-# DSO 注释版本
+# DSO-CC_Comments
+## Introduction
+这是 DSO 开源代码的详细中文注释版本。
 
-> by gong 
+## Done
+- 完整看完一遍，尤其是后端优化部分
+
+## TODO
+- 初始化部分经验性较强，没有特别看懂
+
+## Acknowledgements
+- [dso](https://github.com/JakobEngel/dso)
+
+- [DSO](https://github.com/alalagong/DSO)
+
 
 ---
+
+
 # DSO: Direct Sparse **Odometry**
 
 For more information see
